@@ -1,0 +1,20 @@
+{
+  "context_tokens": 24000,
+  "default": "qwen2.5-coder:7b-tools",
+  "models": [
+    {
+      "name": "qwen2.5-coder:7b-tools",
+      "port": 11434,
+      "tool_mode": "native",
+      "base": "qwen2.5-coder:7b",
+      "num_ctx": 32768
+    },
+    {
+      "name": "llama3.2:3b-tools",
+      "port": 11434,
+      "tool_mode": "native",
+      "base": "llama3.2:3b",
+      "num_ctx": 32768
+    }
+  ]
+}
