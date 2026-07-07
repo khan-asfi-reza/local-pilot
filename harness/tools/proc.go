@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -44,10 +43,7 @@ func (p *ProcSet) StopAll() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, bp := range p.procs {
-		if bp.cmd != nil && bp.cmd.Process != nil {
-			_ = syscall.Kill(-bp.cmd.Process.Pid, syscall.SIGKILL)
-			_ = bp.cmd.Process.Kill()
-		}
+		killProcess(bp.cmd)
 	}
 	p.procs = nil
 }
@@ -164,5 +160,8 @@ func withinDir(base, target string) bool {
 	if err != nil {
 		return false
 	}
-	return rel == "." || (!strings.HasPrefix(rel, "..") && !filepath.IsAbs(rel))
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false // climbs out of base
+	}
+	return !filepath.IsAbs(rel)
 }

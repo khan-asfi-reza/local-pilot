@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"time"
 
 	"harness/harness/events"
@@ -56,7 +55,7 @@ func shellRunTool() *Tool {
 			timeout := time.Duration(args.Int("timeout_seconds", 60)) * time.Second
 			ctx, cancel := context.WithTimeout(env.Ctx, timeout)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, "sh", "-c", command)
+			cmd := newShellCmd(ctx, command)
 			cmd.Dir = env.WorkDir
 			return runCommand(cmd, command), nil, nil
 		},
@@ -82,10 +81,10 @@ func serveTool() *Tool {
 			port := args.Int("port", 0)
 			wait := time.Duration(args.Int("wait_seconds", 20)) * time.Second
 
-			cmd := exec.Command("sh", "-c", command)
+			cmd := newShellCmd(context.Background(), command)
 			cmd.Dir = env.WorkDir
 			// Own process group so the whole server tree can be killed at turn end.
-			cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			setProcGroup(cmd)
 			var log bytes.Buffer
 			cmd.Stdout = &log
 			cmd.Stderr = &log

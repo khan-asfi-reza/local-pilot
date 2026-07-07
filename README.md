@@ -22,7 +22,7 @@ Normal use needs no internet. The only tool that reaches the network is
 | **ollama**  | Installed and on your `PATH` ([ollama.com](https://ollama.com)). `pilot start` will launch it for you. |
 | **Disk**    | ~5 GB for the default `qwen2.5-coder:7b` model (one-time download) |
 | **RAM**     | 8 GB works; 16 GB or more recommended for the 7B model |
-| **OS**      | macOS or Linux (developed on macOS) |
+| **OS**      | macOS, Linux, or Windows |
 
 No API keys. No accounts. Nothing to configure to get started.
 
@@ -47,8 +47,18 @@ go build -o bin/pilot ./cmd/pilot   # the single pilot binary (start/add/code/ru
 go build ./...                      # or compile everything
 ```
 
-`bin/pilot` is the whole CLI; the `./pilot` script just builds it and forwards
-your arguments.
+`bin/pilot` is the whole CLI; the launcher just builds it and forwards your
+arguments. Use the launcher for your OS:
+
+| OS | Launcher | Example |
+|----|----------|---------|
+| macOS / Linux | `./pilot` (bash) | `./pilot start` |
+| Windows (cmd) | `pilot.cmd` | `pilot.cmd start` |
+| Windows (PowerShell) | `pilot.ps1` | `.\pilot.ps1 start` |
+
+The commands below use `./pilot`; substitute your launcher on Windows (or just
+run `bin\pilot.exe` directly). The agent runs its own shell commands through
+`cmd /C` on Windows and `sh -c` elsewhere, independent of your terminal.
 
 ### 3. Bring up ollama and the default model
 

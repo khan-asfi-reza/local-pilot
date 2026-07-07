@@ -59,6 +59,7 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 	serveInjected := false
 	depsInjected := false
 	finishNudged := false
+	usedTools := false
 
 	for step := 0; step < a.maxSteps; step++ {
 		msg, tokens, err := a.chatStep(ctx, system, conv, defs)
@@ -72,9 +73,9 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 		// No tool calls: the model is giving its final answer.
 		if len(msg.ToolCalls) == 0 {
 			text := strings.TrimSpace(msg.Content)
-			// Nudge once before accepting the finish: force a completeness check so
-			// the model doesn't stop with files uncreated or checks unvalidated.
-			if !finishNudged {
+			// Nudge once before accepting the finish, but only if the turn actually
+			// did tool work — a plain answer or chat reply finishes immediately.
+			if !finishNudged && usedTools {
 				finishNudged = true
 				conv = append(conv, model.Message{Role: "assistant", Content: text})
 				conv = append(conv, model.Message{Role: "user", Content: "Before finishing, verify completeness: list_dir to confirm EVERY file the task asked for actually exists, and confirm each check (test/build/curl) truly returned the expected result, not just exited. If any requested file is missing or any result is wrong, keep working with tools. Only if everything is genuinely done and verified, reply with your final summary."})
@@ -87,6 +88,7 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 		}
 
 		conv = append(conv, msg)
+		usedTools = true
 		if reasoning := strings.TrimSpace(msg.Content); reasoning != "" {
 			emit(events.Text(reasoning + "\n"))
 		}
