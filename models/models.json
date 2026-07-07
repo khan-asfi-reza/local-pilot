@@ -1,6 +1,12 @@
 {
   "context_tokens": 24000,
   "default": "qwen2.5-coder:7b-tools",
+  "suggested": [
+    "qwen2.5-coder:7b",
+    "qwen2.5-coder:14b",
+    "qwen2.5-coder:32b",
+    "qwen2.5-coder:3b"
+  ],
   "models": [
     {
       "name": "qwen2.5-coder:7b-tools",

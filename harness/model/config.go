@@ -31,6 +31,9 @@ type Config struct {
 	ContextTokens int          `json:"context_tokens"`
 	Default       string       `json:"default"`
 	Models        []ModelEntry `json:"models"`
+	// Suggested is the list of base ollama models the start menu offers; the first
+	// is the default choice.
+	Suggested []string `json:"suggested,omitempty"`
 
 	active string // runtime selection
 	dir    string // directory of the config file, for resolving assets

@@ -68,15 +68,41 @@ run `bin\pilot.exe` directly). The agent runs its own shell commands through
 
 `pilot start` is the one-time setup. It:
 
-1. builds `bin/pilot` if needed,
-2. starts `ollama serve` if it is not already running,
-3. reads the default model from `models/models.json`,
-4. if that model is not installed, pulls its base (`qwen2.5-coder:7b`, ~5 GB
-   one-time download), applies the tool-call template and context window, and
-   creates the local model,
-5. confirms the model is ready.
+1. installs ollama if it is missing (with your confirmation), then starts it,
+2. shows a menu of models to pick from (or type any ollama model name); press
+   Enter for the default,
+3. if the chosen model is not installed, pulls its base (e.g. `qwen2.5-coder:7b`,
+   ~5 GB one-time download), applies the tool-call template and context window,
+   and creates the local model,
+4. sets it as the default and confirms it is ready.
 
 It is idempotent. Run it any time to make sure everything is up.
+
+The model menu is driven by the `suggested` list in `models.json`:
+
+```
+Choose a model:
+  1. qwen2.5-coder:7b   (default)
+  2. qwen2.5-coder:14b
+  3. qwen2.5-coder:32b
+  4. qwen2.5-coder:3b
+  5. Enter an ollama model name
+```
+
+### Data directory
+
+Config and skills live in a per-user data directory, seeded from the built-in
+defaults on first run and reused after (so pilot runs from anywhere, and your
+added models and prompt edits persist):
+
+| OS | Location |
+|----|----------|
+| macOS | `~/.localpilot` |
+| Linux | `$XDG_DATA_HOME/localpilot` or `~/.local/share/localpilot` |
+| Windows | `%LOCALAPPDATA%\localpilot` |
+
+It mirrors the repo layout: `models/models.json`, `models/prompt.json`, and
+`skills/`. Delete it to reset to defaults; `pilot start` recreates it.
 
 ### 4. Start working
 
@@ -92,7 +118,10 @@ It is idempotent. Run it any time to make sure everything is up.
 
 | Command | What it does |
 |---------|--------------|
-| `./pilot start`               | Ensure ollama is running and the default model is installed |
+| `./pilot start`               | Install/start ollama, pick a model, and get ready |
+| `./pilot stop`                | Stop the ollama server |
+| `./pilot models list`         | List installed models and the default |
+| `./pilot models set-default`  | Choose the default from installed models (or pass a name) |
 | `./pilot add <base-model>`    | Pull a base model, apply the tool-call template, and register it |
 | `./pilot code [--dir X]`      | Open the interactive terminal UI |
 | `./pilot run --dir X --task "..."` | Run one task to completion, headless (`--task-file F`, `--max-steps N`, `--format ndjson\|human`) |
