@@ -1,0 +1,10 @@
+[      60ms] [ERROR] Failed to load resource: the server responded with a status of 404 (File not found) @ http://localhost:8199/favicon.ico:0
+[    8175ms] TypeError: Cannot read properties of undefined (reading 'x')
+    at updateGame (http://localhost:8199/index.html:49:40)
+    at gameLoop (http://localhost:8199/index.html:69:13)
+[   19796ms] TypeError: Cannot read properties of undefined (reading 'x')
+    at updateGame (http://localhost:8199/index.html:49:40)
+    at gameLoop (http://localhost:8199/index.html:69:13)
+[   28517ms] TypeError: Cannot read properties of undefined (reading 'x')
+    at updateGame (http://localhost:8199/index.html:49:40)
+    at gameLoop (http://localhost:8199/index.html:69:13)
