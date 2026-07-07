@@ -1,4 +1,4 @@
-package main
+package terminal
 
 import (
 	"context"
@@ -13,9 +13,9 @@ import (
 	"harness/harness/model"
 )
 
-// runCommand is the headless one-shot entry (`harness run`): it runs one task to
+// Run is the headless one-shot entry (`pilot run`): it runs one task to
 // completion in auto mode, streams events, and exits non-zero on error.
-func runCommand(argv []string) {
+func Run(argv []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
 	dir := fs.String("dir", ".", "project working directory the assistant operates in")
 	task := fs.String("task", "", "the task/PRD text to run")

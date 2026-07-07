@@ -3,5 +3,5 @@ models/assets/*.gguf
 .harness/
 tests/sandbox/*
 !tests/sandbox/.gitkeep
-.playright-mcp
-pilot
+.playwright-mcp
+.DS_Store

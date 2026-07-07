@@ -1,6 +1,6 @@
-// Command harness is the terminal coding assistant. It imports the harness core
-// directly, so its tools run in the project folder it is launched against.
-package main
+// Package terminal is the interactive coding agent (the TUI) and the headless
+// one-shot run command, driven by the pilot launcher.
+package terminal
 
 import (
 	"flag"
@@ -12,17 +12,13 @@ import (
 	"harness/harness/model"
 )
 
-func main() {
-	// `harness run ...` is the headless one-shot mode; anything else is the TUI.
-	if len(os.Args) > 1 && os.Args[1] == "run" {
-		runCommand(os.Args[2:])
-		return
-	}
-
-	dir := flag.String("dir", ".", "project working directory the assistant operates in")
-	configPath := flag.String("config", "", "path to models/models.json (default: search up from --dir)")
-	skillsDir := flag.String("skills", "", "skills directory (default: a skills folder near the config)")
-	flag.Parse()
+// Code launches the interactive terminal UI. args are the flags after `code`.
+func Code(args []string) {
+	fs := flag.NewFlagSet("code", flag.ExitOnError)
+	dir := fs.String("dir", ".", "project working directory the assistant operates in")
+	configPath := fs.String("config", "", "path to models/models.json (default: search up from --dir)")
+	skillsDir := fs.String("skills", "", "skills directory (default: a skills folder near the config)")
+	_ = fs.Parse(args)
 
 	workDir, err := filepath.Abs(*dir)
 	if err != nil {
@@ -111,6 +107,6 @@ func isDir(path string) bool {
 }
 
 func fatal(format string, a ...any) {
-	fmt.Fprintf(os.Stderr, "harness: "+format+"\n", a...)
+	fmt.Fprintf(os.Stderr, "pilot: "+format+"\n", a...)
 	os.Exit(1)
 }
