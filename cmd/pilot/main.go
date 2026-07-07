@@ -4,6 +4,7 @@
 package main
 
 import (
+	"slices"
 	"context"
 	"fmt"
 	"net/http"
@@ -30,12 +31,6 @@ func main() {
 	switch args[0] {
 	case "start":
 		err = start()
-	case "add":
-		if len(args) < 2 {
-			fmt.Print(helpText())
-			os.Exit(2)
-		}
-		err = addCmd(args[1])
 	case "stop":
 		err = stop()
 	case "models":
@@ -106,32 +101,24 @@ func start() error {
 	return nil
 }
 
-// addCmd builds and registers a model variant from a base, without changing the default.
-func addCmd(base string) error {
-	cfgPath, err := appdir.Ensure()
-	if err != nil {
-		return err
+// toolModeFor picks the tool-calling strategy by model size: small models (≤3B)
+// are unreliable at native tool calls, so they use the grammar-constrained JSON
+// path (enforced via ollama's response_format); larger models use native calls.
+func toolModeFor(base string) string {
+	b := strings.ToLower(base)
+	for _, s := range []string{"0.5b", "1b", "1.5b", "2b", "3b"} {
+		if strings.Contains(b, ":"+s) || strings.Contains(b, "-"+s) {
+			return model.ToolModeJSON
+		}
 	}
-	cfg, err := model.LoadConfig(cfgPath)
-	if err != nil {
-		return err
-	}
-	if err := ensureOllama("http://localhost:11434"); err != nil {
-		return err
-	}
-	name, err := buildAndRegister(cfgPath, cfg, base)
-	if err != nil {
-		return fmt.Errorf("could not add %q: %w", base, err)
-	}
-	fmt.Println(green("✓ ") + fmt.Sprintf("added %s. Switch to it with %s", bold(name), cyan("/model "+name)))
-	return nil
+	return model.ToolModeNative
 }
 
 // buildAndRegister pulls base, creates the <base>-tools variant with the tool-call
 // template and num_ctx, and records it in models.json. Idempotent.
 func buildAndRegister(cfgPath string, cfg *model.Config, base string) (string, error) {
 	name := base + "-tools"
-	entry := model.ModelEntry{Name: name, Base: base, NumCtx: defaultNumCtx, ToolMode: model.ToolModeNative, Port: 11434}
+	entry := model.ModelEntry{Name: name, Base: base, NumCtx: defaultNumCtx, ToolMode: toolModeFor(base), Port: 11434}
 	if !modelInstalled(name) {
 		if err := installModel(entry); err != nil {
 			return "", err
@@ -211,10 +198,10 @@ func ensureOllamaInstalled() error {
 	}
 }
 
-// modelsCmd handles `pilot models list` and `pilot models set-default [name]`.
+// modelsCmd handles `pilot models add|list|set-default`.
 func modelsCmd(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pilot models <list | set-default [name]>")
+		return fmt.Errorf("usage: pilot models <add <model> [--host URL] | list | set-default [name]>")
 	}
 	cfgPath, err := appdir.Ensure()
 	if err != nil {
@@ -224,10 +211,24 @@ func modelsCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	if err := ensureOllama("http://localhost:11434"); err != nil {
-		return err
-	}
 	switch args[0] {
+	case "add":
+		base, host := parseAddArgs(args[1:])
+		if base == "" {
+			return fmt.Errorf("usage: pilot models add <ollama-model> [--host URL]")
+		}
+		if host != "" {
+			return addRemoteModel(cfgPath, cfg, base, host)
+		}
+		if err := ensureOllama("http://localhost:11434"); err != nil {
+			return err
+		}
+		name, err := buildAndRegister(cfgPath, cfg, base)
+		if err != nil {
+			return fmt.Errorf("could not add %q: %w", base, err)
+		}
+		fmt.Println(green("✓ ") + fmt.Sprintf("added %s. Use it with %s", bold(name), cyan("/model "+name)))
+		return nil
 	case "list":
 		return modelsList(cfg)
 	case "set-default":
@@ -237,84 +238,117 @@ func modelsCmd(args []string) error {
 		}
 		return setDefaultModel(cfgPath, cfg, name)
 	default:
-		return fmt.Errorf("unknown: pilot models %s (try list or set-default)", args[0])
+		return fmt.Errorf("unknown: pilot models %s (try add, list, or set-default)", args[0])
 	}
 }
+
+// parseAddArgs pulls the model name and optional --host URL out of add's args.
+func parseAddArgs(rest []string) (base, host string) {
+	for i := 0; i < len(rest); i++ {
+		switch {
+		case rest[i] == "--host" && i+1 < len(rest):
+			host = rest[i+1]
+			i++
+		case strings.HasPrefix(rest[i], "--host="):
+			host = strings.TrimPrefix(rest[i], "--host=")
+		case !strings.HasPrefix(rest[i], "-") && base == "":
+			base = rest[i]
+		}
+	}
+	return base, host
+}
+
+// addRemoteModel registers a model that lives on another ollama server on the
+// network. It verifies the model exists there; it does not pull or create.
+func addRemoteModel(cfgPath string, cfg *model.Config, name, host string) error {
+	url := model.NormalizeHost(host)
+	inst, err := model.NewClient().InstalledModels(url)
+	if err != nil {
+		return fmt.Errorf("cannot reach ollama at %s: %w", url, err)
+	}
+	if !contains(inst, name) {
+		return fmt.Errorf("%q is not installed on %s. Models there: %s", name, url, strings.Join(inst, ", "))
+	}
+	cfg.AddModel(model.ModelEntry{Name: name, Host: url, ToolMode: toolModeFor(name)})
+	if err := cfg.Save(cfgPath); err != nil {
+		return err
+	}
+	fmt.Println(green("✓ ") + fmt.Sprintf("added %s from %s. Use it with %s", bold(name), url, cyan("/model "+name)))
+	return nil
+}
+
 
 func installedModels() []string {
 	names, _ := model.NewClient().InstalledModels("http://localhost:11434")
 	return names
 }
 
-// toolModels keeps only the -tools variants (the ones that do native tool calls),
-// hiding the raw base models they were built from.
-func toolModels(list []string) []string {
-	var out []string
-	for _, n := range list {
-		if strings.HasSuffix(n, "-tools") {
-			out = append(out, n)
-		}
-	}
-	return out
-}
-
 func registered(cfg *model.Config, name string) bool {
-	for _, n := range cfg.Names() {
-		if n == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(cfg.Names(), name)
 }
 
-// modelsList shows the models installed in ollama, marking the default.
+// modelsList shows every configured model with its server and readiness,
+// marking the default.
 func modelsList(cfg *model.Config) error {
-	inst := toolModels(installedModels())
-	if len(inst) == 0 {
-		fmt.Println(dim("no models installed. Run ") + cyan("pilot start"))
+	names := cfg.Names()
+	if len(names) == 0 {
+		fmt.Println(dim("no models configured. Run ") + cyan("pilot start"))
 		return nil
 	}
-	fmt.Println(bold("Installed models:"))
-	for _, n := range inst {
+	client := model.NewClient()
+	cache := map[string]map[string]bool{}
+	fmt.Println(bold("Configured models:"))
+	for _, n := range names {
+		url, _ := cfg.URLFor(n)
+		set, ok := cache[url]
+		if !ok {
+			set = map[string]bool{}
+			inst, _ := client.InstalledModels(url)
+			for _, m := range inst {
+				set[m] = true
+			}
+			cache[url] = set
+		}
 		mark := "  "
 		if n == cfg.Default {
 			mark = green("➤ ")
 		}
-		fmt.Println(mark + n)
+		status := red("offline")
+		if len(set) > 0 {
+			if set[n] {
+				status = green("ready")
+			} else {
+				status = yellow("not found")
+			}
+		}
+		fmt.Printf("%s%s  %s  %s\n", mark, pad(n, 26), status, dim(url))
 	}
 	return nil
 }
 
-// setDefaultModel makes an installed model the default, asking the user to pick
-// one when no name is given.
+// setDefaultModel makes a configured model the default, asking the user to pick
+// one when no name is given. Remote models (registered by host) are eligible.
 func setDefaultModel(cfgPath string, cfg *model.Config, name string) error {
-	all := installedModels()
-	if len(all) == 0 {
-		return fmt.Errorf("no models installed. Run %s first", cyan("pilot start"))
-	}
 	if name == "" {
-		choices := toolModels(all)
+		choices := cfg.Names()
 		if len(choices) == 0 {
-			choices = all
+			return fmt.Errorf("no models configured. Run %s first", cyan("pilot start"))
 		}
 		name = selectModel(choices, cfg.Default)
 		if name == "" {
 			return fmt.Errorf("no model selected")
 		}
-	} else if !contains(all, name) {
-		return fmt.Errorf("%q is not installed in ollama. Installed: %s", name, strings.Join(all, ", "))
+	} else if !registered(cfg, name) && !contains(installedModels(), name) {
+		return fmt.Errorf("%q is not configured or installed locally. Add it with %s", name, cyan("pilot models add "+name))
 	}
 	if !registered(cfg, name) {
-		cfg.AddModel(model.ModelEntry{Name: name, ToolMode: model.ToolModeNative, Port: 11434, NumCtx: defaultNumCtx})
+		cfg.AddModel(model.ModelEntry{Name: name, ToolMode: toolModeFor(name), Port: 11434, NumCtx: defaultNumCtx})
 	}
 	cfg.Default = name
 	if err := cfg.Save(cfgPath); err != nil {
 		return err
 	}
 	fmt.Println(green("✓ ") + "default model is now " + bold(name))
-	if !strings.HasSuffix(name, "-tools") {
-		fmt.Println(yellow("• ") + dim("models without a -tools variant may not do native tool calls; build one with ") + cyan("pilot add "+name))
-	}
 	return nil
 }
 
@@ -339,12 +373,7 @@ func selectModel(models []string, current string) string {
 }
 
 func contains(list []string, s string) bool {
-	for _, x := range list {
-		if x == s {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(list, s)
 }
 
 // stop stops the running ollama server.
@@ -382,7 +411,7 @@ func ensureOllama(url string) error {
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start ollama: %w", err)
 	}
-	for i := 0; i < 40; i++ {
+	for range 40 {
 		if ollamaUp(url) {
 			fmt.Println(green("✓ ") + "ollama running")
 			return nil
@@ -435,17 +464,20 @@ func installModel(entry model.ModelEntry) error {
 	return stream("ollama", "create", entry.Name, "-f", tmp.Name())
 }
 
-// buildModelfile derives the local Modelfile from the base: it swaps the
-// <tool_call> tags to [tool_call] (which the model actually emits, so ollama
-// parses native tool_calls) and bakes in num_ctx.
+// buildModelfile derives the local Modelfile from the base and bakes in num_ctx.
+// For qwen2.5-coder ONLY, it swaps the <tool_call> tags to [tool_call], which
+// that family emits reliably; other models emit <tool_call> natively, so their
+// template is left untouched (swapping it would break their tool-call parsing).
 func buildModelfile(base string, numCtx int) (string, error) {
 	out, err := exec.Command("ollama", "show", base, "--modelfile").Output()
 	if err != nil {
 		return "", fmt.Errorf("read base modelfile: %w", err)
 	}
 	mf := string(out)
-	mf = strings.ReplaceAll(mf, "</tool_call>", "[/tool_call]")
-	mf = strings.ReplaceAll(mf, "<tool_call>", "[tool_call]")
+	if strings.Contains(strings.ToLower(base), "qwen2.5-coder") {
+		mf = strings.ReplaceAll(mf, "</tool_call>", "[/tool_call]")
+		mf = strings.ReplaceAll(mf, "<tool_call>", "[tool_call]")
+	}
 	if numCtx > 0 && !strings.Contains(mf, "num_ctx") {
 		mf += fmt.Sprintf("\nPARAMETER num_ctx %d\n", numCtx)
 	}

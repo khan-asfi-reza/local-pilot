@@ -915,40 +915,101 @@ func (u *ui) command(cmd string) {
 	}
 }
 
-// modelCmd lists the registered models with live running status, or switches the
-// active one. Switching to a model whose backend is not running warns how to
-// start it.
+// modelCmd opens the model picker (/model) or switches directly (/model <name>).
 func (u *ui) modelCmd(args []string) {
 	if len(args) == 0 {
+		u.pickModel()
+		return
+	}
+	u.chooseModel(args[0], true)
+}
+
+// pickModel docks an interactive selector where the input was: the current
+// default is marked, arrow keys move, Enter sets the default, s switches for this
+// session only, Esc cancels.
+func (u *ui) pickModel() {
+	models := u.ag.Models()
+	if len(models) == 0 {
 		u.showNotice("Models", func(w io.Writer) {
-			for _, m := range u.ag.Models() {
-				marker := "  "
-				if m.Active {
-					marker = "[green]➤ [-]"
-				}
-				state := "[gray]not installed[-]"
-				if m.Running {
-					state = "[lime]ready[-]"
-				}
-				fmt.Fprintf(w, "%s[white]%-22s[-] %s  [gray]%s[-]\n", marker, tview.Escape(m.Name), state, tview.Escape(m.URL))
-			}
-			fmt.Fprintf(w, "\n[silver]Switch with /model <name>. Add one: ./pilot add <base-model>[-]\n")
+			fmt.Fprintln(w, "[yellow]No models configured.[-] Run [white]pilot start[-], or add one with [white]pilot models add <model>[-].")
 		})
 		return
 	}
-	name := args[0]
-	if err := u.ag.SetModel(name); err != nil {
+
+	list := tview.NewList().ShowSecondaryText(true)
+	list.SetBackgroundColor(tcell.ColorDefault)
+	list.SetMainTextColor(tcell.ColorDefault).
+		SetSecondaryTextColor(tcell.ColorGray).
+		SetSelectedTextColor(tcell.ColorBlack).
+		SetSelectedBackgroundColor(tcell.ColorLightSkyBlue)
+	list.SetBorder(true).SetTitle(" Select model  (↑↓ move · Enter = default · s = this session · Esc = cancel) ")
+
+	current := 0
+	for i, m := range models {
+		main := fmt.Sprintf("%d. %s", i+1, m.Name)
+		if m.Active {
+			main = fmt.Sprintf("[green]%d. %s  ✓ current[-]", i+1, m.Name)
+			current = i
+		}
+		state := "not installed"
+		if m.Running {
+			state = "ready"
+		}
+		name := m.Name
+		list.AddItem(main, "   "+state+" · "+m.URL, 0, func() { u.chooseModel(name, true) })
+	}
+	// Render the per-item color tags (the green current marker).
+	list.SetUseStyleTags(true, false)
+	list.SetCurrentItem(current)
+
+	list.SetInputCapture(func(ev *tcell.EventKey) *tcell.EventKey {
+		switch {
+		case ev.Key() == tcell.KeyEsc:
+			u.restoreInput()
+			return nil
+		case ev.Rune() == 's' || ev.Rune() == 'S':
+			if i := list.GetCurrentItem(); i >= 0 && i < len(models) {
+				u.chooseModel(models[i].Name, false)
+			}
+			return nil
+		}
+		return ev
+	})
+
+	height := 2*len(models) + 2
+	if height > 16 {
+		height = 16
+	}
+	u.swapBottom(list, height, "model")
+}
+
+// chooseModel switches to name, saving it as the default (asDefault) or only for
+// this session, then restores the input and reports the result.
+func (u *ui) chooseModel(name string, asDefault bool) {
+	var err error
+	if asDefault {
+		err = u.ag.UseModel(name)
+	} else {
+		err = u.ag.SetModel(name)
+	}
+	if u.bottomKind != "input" {
+		u.restoreInput()
+	}
+	if err != nil {
 		u.showNotice("Model", func(w io.Writer) { fmt.Fprintf(w, "[red]%s[-]\n", tview.Escape(err.Error())) })
 		return
 	}
 	u.session.Model = name
 	_ = u.session.save(u.workDir)
 	u.setStatus()
+	scope := "saved as default"
+	if !asDefault {
+		scope = "this session only"
+	}
 	u.showNotice("Model", func(w io.Writer) {
-		if u.ag.Reachable(name) {
-			fmt.Fprintf(w, "[green]Now using %s[-]\n", tview.Escape(name))
-		} else {
-			fmt.Fprintf(w, "[yellow]Now using %s, but ollama is not running.[-]\nStart it: ./pilot start\n", tview.Escape(name))
+		fmt.Fprintf(w, "[green]Now using [white::b]%s[-:-:-][green] (%s)[-]\n", tview.Escape(name), scope)
+		if !u.ag.Reachable(name) {
+			fmt.Fprintf(w, "[yellow]Note: its server is not reachable. Start ollama with [white]pilot start[-]\n")
 		}
 	})
 }
@@ -1003,7 +1064,7 @@ func (u *ui) help() {
 	u.showNotice("Help", func(w io.Writer) {
 		fmt.Fprintln(w, "[aqua::b]Commands[-:-:-]")
 		fmt.Fprintln(w, "  [white]/plan /ask /auto[-]   set the permission mode")
-		fmt.Fprintln(w, "  [white]/model[-]             list models; /model <name> switches")
+		fmt.Fprintln(w, "  [white]/model[-]             list models and the one in use; /model <name> switch + save default")
 		fmt.Fprintln(w, "  [white]/cwd[-]               show the working directory")
 		fmt.Fprintln(w, "  [white]/clear[-]             forget the conversation")
 		fmt.Fprintln(w, "  [white]/quit[-]              exit")

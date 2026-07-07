@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type ModelEntry struct {
@@ -17,6 +18,26 @@ type ModelEntry struct {
 	Base string `json:"base,omitempty"`
 	// NumCtx is the runtime context window baked into the created model.
 	NumCtx int `json:"num_ctx,omitempty"`
+	// Host is the ollama server this model lives on, e.g. http://192.168.1.50:11434.
+	// Empty means the local server on Port.
+	Host string `json:"host,omitempty"`
+}
+
+// NormalizeHost turns a host like "192.168.1.5", "192.168.1.5:11434", or a full
+// URL into a base URL with a scheme and port.
+func NormalizeHost(h string) string {
+	h = strings.TrimSpace(h)
+	if h == "" {
+		return ""
+	}
+	if !strings.Contains(h, "://") {
+		h = "http://" + h
+	}
+	rest := h[strings.Index(h, "://")+3:]
+	if !strings.Contains(rest, ":") {
+		h += ":11434"
+	}
+	return strings.TrimRight(h, "/")
 }
 
 // ToolModeNative and ToolModeJSON name the two tool-calling strategies.
@@ -126,7 +147,20 @@ func (c *Config) Active() (name, url string, err error) {
 	if !ok {
 		return "", "", fmt.Errorf("active model %q is not configured", c.active)
 	}
-	return e.Name, URLForPort(e.Port), nil
+	return e.Name, entryURL(e), nil
+}
+
+// entryURL is the base URL for a model: its Host if set (a remote server on the
+// network), otherwise the local server on its port.
+func entryURL(e ModelEntry) string {
+	if e.Host != "" {
+		return NormalizeHost(e.Host)
+	}
+	port := e.Port
+	if port == 0 {
+		port = 11434
+	}
+	return URLForPort(port)
 }
 
 func (c *Config) SetActive(name string) error {
@@ -150,7 +184,7 @@ func (c *Config) URLFor(name string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	return URLForPort(e.Port), true
+	return entryURL(e), true
 }
 
 func (c *Config) AssetPath(name string) (string, bool) {

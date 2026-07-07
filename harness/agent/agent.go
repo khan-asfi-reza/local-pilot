@@ -4,6 +4,9 @@
 package agent
 
 import (
+	"fmt"
+	"path/filepath"
+
 	"harness/harness/model"
 	"harness/harness/tools"
 )
@@ -80,17 +83,23 @@ type ModelStatus struct {
 // backend is up, so the terminal can show what is available and switchable.
 func (a *Agent) Models() []ModelStatus {
 	active := a.cfg.ActiveName()
-	installed := map[string]bool{}
-	for _, n := range a.router.InstalledModels() {
-		installed[n] = true
-	}
+	// Cache the installed list per host, so models on the same server are one query.
+	installedAt := map[string]map[string]bool{}
 	var out []ModelStatus
 	for _, name := range a.cfg.Names() {
 		url, _ := a.cfg.URLFor(name)
+		set, ok := installedAt[url]
+		if !ok {
+			set = map[string]bool{}
+			for _, n := range a.router.InstalledModelsAt(url) {
+				set[n] = true
+			}
+			installedAt[url] = set
+		}
 		out = append(out, ModelStatus{
 			Name:    name,
 			URL:     url,
-			Running: a.router.Reachable(url) && installed[name],
+			Running: set[name],
 			Active:  name == active,
 		})
 	}
@@ -105,3 +114,25 @@ func (a *Agent) Reachable(name string) bool {
 
 // SetModel switches the active model to another registered name.
 func (a *Agent) SetModel(name string) error { return a.cfg.SetActive(name) }
+
+// UseModel switches the active model and persists it as the default. If the name
+// is not registered but is installed in ollama, it is added first. Returns an
+// error when the model is neither registered nor installed.
+func (a *Agent) UseModel(name string) error {
+	if err := a.cfg.SetActive(name); err != nil {
+		installed := false
+		for _, n := range a.router.InstalledModels() {
+			if n == name {
+				installed = true
+				break
+			}
+		}
+		if !installed {
+			return fmt.Errorf("%q is not a known or installed model; run `pilot models add %s` first", name, name)
+		}
+		a.cfg.AddModel(model.ModelEntry{Name: name, ToolMode: model.ToolModeNative, Port: 11434})
+		_ = a.cfg.SetActive(name)
+	}
+	a.cfg.Default = name
+	return a.cfg.Save(filepath.Join(a.cfg.Dir(), "models.json"))
+}

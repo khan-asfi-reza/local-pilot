@@ -49,6 +49,11 @@ func (r *Router) InstalledModels() []string {
 	if err != nil {
 		return nil
 	}
+	return r.InstalledModelsAt(url)
+}
+
+// InstalledModelsAt returns the model tags installed on a specific backend URL.
+func (r *Router) InstalledModelsAt(url string) []string {
 	names, err := r.client.InstalledModels(url)
 	if err != nil {
 		return nil

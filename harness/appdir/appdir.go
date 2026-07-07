@@ -4,10 +4,13 @@
 package appdir
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 
 	root "harness"
 )
@@ -39,20 +42,30 @@ func Dir() string {
 	return filepath.Join(h, ".localpilot")
 }
 
-// Ensure creates the data dir and seeds models/models.json, models/prompt.json,
-// and skills/ from the embedded defaults where they are missing. It mirrors the
-// repo layout so the config, prompt, and skill loaders resolve unchanged. It is
-// idempotent and never overwrites an existing file. Returns the models.json path.
+// Ensure creates the data dir and populates it from the embedded defaults,
+// mirroring the repo layout so the config, prompt, and skill loaders resolve
+// unchanged. models.json is user state: seeded only if missing, never clobbered.
+// prompt.json and skills are shipped content: refreshed whenever the binary's
+// embedded version changes, so fixes propagate on upgrade. Returns models.json.
 func Ensure() (string, error) {
 	dir := Dir()
-	if err := seedFile(dir, "models/models.json"); err != nil {
+	if err := place(dir, "models/models.json", false); err != nil {
 		return "", err
 	}
-	if err := seedFile(dir, "models/prompt.json"); err != nil {
+
+	want := embeddedVersion()
+	verPath := filepath.Join(dir, ".defaults-version")
+	have, _ := os.ReadFile(verPath)
+	refresh := string(have) != want
+
+	if err := place(dir, "models/prompt.json", refresh); err != nil {
 		return "", err
 	}
-	if err := seedTree(dir, "skills"); err != nil {
+	if err := placeTree(dir, "skills", refresh); err != nil {
 		return "", err
+	}
+	if refresh {
+		_ = os.WriteFile(verPath, []byte(want), 0o644)
 	}
 	return filepath.Join(dir, "models", "models.json"), nil
 }
@@ -60,11 +73,14 @@ func Ensure() (string, error) {
 // ConfigPath returns the models.json path without seeding.
 func ConfigPath() string { return filepath.Join(Dir(), "models", "models.json") }
 
-// seedFile writes one embedded file to dir/rel if it does not already exist.
-func seedFile(dir, rel string) error {
+// place writes an embedded file to dir/rel. When overwrite is false it is kept
+// if it already exists (used for user state); when true it is always rewritten.
+func place(dir, rel string, overwrite bool) error {
 	dst := filepath.Join(dir, filepath.FromSlash(rel))
-	if _, err := os.Stat(dst); err == nil {
-		return nil
+	if !overwrite {
+		if _, err := os.Stat(dst); err == nil {
+			return nil
+		}
 	}
 	data, err := root.Defaults.ReadFile(rel)
 	if err != nil {
@@ -76,12 +92,33 @@ func seedFile(dir, rel string) error {
 	return os.WriteFile(dst, data, 0o644)
 }
 
-// seedTree copies an embedded directory subtree into dir, file by file.
-func seedTree(dir, rel string) error {
+// placeTree copies an embedded directory subtree into dir, file by file.
+func placeTree(dir, rel string, overwrite bool) error {
 	return fs.WalkDir(root.Defaults, rel, func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		return seedFile(dir, p)
+		return place(dir, p, overwrite)
 	})
+}
+
+// embeddedVersion is a content hash of the shipped prompt and skills, so any edit
+// to them changes the version and triggers a refresh of the data dir on upgrade.
+func embeddedVersion() string {
+	var files []string
+	files = append(files, "models/prompt.json")
+	_ = fs.WalkDir(root.Defaults, "skills", func(p string, d fs.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			files = append(files, p)
+		}
+		return nil
+	})
+	sort.Strings(files)
+	h := sha256.New()
+	for _, f := range files {
+		b, _ := root.Defaults.ReadFile(f)
+		h.Write([]byte(f))
+		h.Write(b)
+	}
+	return hex.EncodeToString(h.Sum(nil))[:16]
 }

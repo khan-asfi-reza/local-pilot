@@ -14,10 +14,10 @@ import (
 
 // Code launches the interactive terminal UI. args are the flags after `code`.
 func Code(args []string) {
-	fs := flag.NewFlagSet("code", flag.ExitOnError)
+	fs := flag.NewFlagSet("pilot code", flag.ExitOnError)
 	dir := fs.String("dir", ".", "project working directory the assistant operates in")
-	configPath := fs.String("config", "", "path to models/models.json (default: search up from --dir)")
-	skillsDir := fs.String("skills", "", "skills directory (default: a skills folder near the config)")
+	configPath := fs.String("config", "", "path to the model registry (default: the local-pilot config)")
+	skillsDir := fs.String("skills", "", "skills directory (default: alongside the config)")
 	_ = fs.Parse(args)
 
 	workDir, err := filepath.Abs(*dir)

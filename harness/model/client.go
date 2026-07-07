@@ -64,12 +64,21 @@ func (c *Client) Reachable(url string) bool {
 }
 
 type constrainedRequest struct {
-	Model       string          `json:"model"`
-	Messages    []Message       `json:"messages"`
-	Stream      bool            `json:"stream"`
-	Temperature float64         `json:"temperature"`
-	JSONSchema  json.RawMessage `json:"json_schema"`
-	CachePrompt bool `json:"cache_prompt"`
+	Model          string         `json:"model"`
+	Messages       []Message      `json:"messages"`
+	Stream         bool           `json:"stream"`
+	Temperature    float64        `json:"temperature"`
+	ResponseFormat responseFormat `json:"response_format"`
+}
+
+type responseFormat struct {
+	Type       string     `json:"type"`
+	JSONSchema schemaBlock `json:"json_schema"`
+}
+
+type schemaBlock struct {
+	Name   string          `json:"name"`
+	Schema json.RawMessage `json:"schema"`
 }
 
 type fullResponse struct {
@@ -124,7 +133,13 @@ func (c *Client) Chat(ctx context.Context, url, model string, msgs []Message, de
 }
 
 func (c *Client) CompleteConstrained(ctx context.Context, url, model string, msgs []Message, schema json.RawMessage) (string, int, error) {
-	body := constrainedRequest{Model: model, Messages: msgs, Stream: false, Temperature: 0.2, JSONSchema: schema, CachePrompt: true}
+	body := constrainedRequest{
+		Model:          model,
+		Messages:       msgs,
+		Stream:         false,
+		Temperature:    0.2,
+		ResponseFormat: responseFormat{Type: "json_schema", JSONSchema: schemaBlock{Name: "action", Schema: schema}},
+	}
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return "", 0, err

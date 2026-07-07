@@ -16,12 +16,12 @@ import (
 // Run is the headless one-shot entry (`pilot run`): it runs one task to
 // completion in auto mode, streams events, and exits non-zero on error.
 func Run(argv []string) {
-	fs := flag.NewFlagSet("run", flag.ExitOnError)
+	fs := flag.NewFlagSet("pilot run", flag.ExitOnError)
 	dir := fs.String("dir", ".", "project working directory the assistant operates in")
 	task := fs.String("task", "", "the task/PRD text to run")
 	taskFile := fs.String("task-file", "", "read the task/PRD from this file instead of --task")
-	configPath := fs.String("config", "", "path to models/models.json (default: search up from --dir)")
-	skillsDir := fs.String("skills", "", "skills directory (default: a skills folder near the config)")
+	configPath := fs.String("config", "", "path to the model registry (default: the local-pilot config)")
+	skillsDir := fs.String("skills", "", "skills directory (default: alongside the config)")
 	mode := fs.String("mode", "auto", "tool mode: auto, ask, or plan (headless runs auto)")
 	format := fs.String("format", "ndjson", "event output format: ndjson or human")
 	maxSteps := fs.Int("max-steps", 0, "override the per-request step cap (0 = default)")

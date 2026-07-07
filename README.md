@@ -120,9 +120,9 @@ It mirrors the repo layout: `models/models.json`, `models/prompt.json`, and
 |---------|--------------|
 | `./pilot start`               | Install/start ollama, pick a model, and get ready |
 | `./pilot stop`                | Stop the ollama server |
+| `./pilot models add <model>`  | Pull a base model, apply the tool-call template, and register it |
 | `./pilot models list`         | List installed models and the default |
 | `./pilot models set-default`  | Choose the default from installed models (or pass a name) |
-| `./pilot add <base-model>`    | Pull a base model, apply the tool-call template, and register it |
 | `./pilot code [--dir X]`      | Open the interactive terminal UI |
 | `./pilot run --dir X --task "..."` | Run one task to completion, headless (`--task-file F`, `--max-steps N`, `--format ndjson\|human`) |
 
@@ -190,16 +190,46 @@ runs everything. You set the mode; the model can never loosen it.
 ## Adding a model
 
 Small local models do not emit tool calls in a format ollama can parse out of
-the box. `pilot add` fixes that: it pulls the base model, rewrites its Modelfile
-template (swapping `<tool_call>` tags for `[tool_call]`, which the coder models
-actually emit), bakes in the context window, and registers the result as
-`<base>-tools`.
+the box. `pilot models add` fixes that: it pulls the base model, for
+qwen2.5-coder rewrites its Modelfile template to swap `<tool_call>` tags for
+`[tool_call]` (which that family emits reliably; other families are left
+untouched), bakes in the context window, picks a tool-calling mode by size
+(models `<=` 3B use the grammar-JSON path, larger ones use native calls), and
+registers the result as `<base>-tools`.
 
 ```bash
-./pilot add llama3.2:3b       # creates and registers llama3.2:3b-tools
+./pilot models add qwen2.5-coder:14b   # creates and registers qwen2.5-coder:14b-tools
 ```
 
-Then switch to it from inside the TUI with `/model llama3.2:3b-tools`.
+Then switch to it from inside the TUI with `/model qwen2.5-coder:14b-tools`.
+
+### Using another machine's ollama server
+
+If another computer on your network runs ollama, register one of its models with
+`--host`. pilot verifies the model exists there and stores the server URL; it
+does not download anything locally.
+
+```bash
+# add a model served by a machine at 192.168.1.50
+./pilot models add qwen2.5-coder:32b-tools --host 192.168.1.50:11434
+# or a full URL
+./pilot models add llama3.1:70b --host http://192.168.1.50:11434
+```
+
+The host is saved per model in `models.json` (`"host": "http://192.168.1.50:11434"`),
+so switching to that model automatically routes requests to that server. You can
+register models from several machines and switch between them with `/model` (in
+the TUI) or `pilot models set-default`. `pilot models list` shows each model's
+server and whether it is reachable:
+
+```
+Configured models:
+➤ qwen2.5-coder:7b-tools      ready  local
+  qwen2.5-coder:32b-tools     ready  http://192.168.1.50:11434
+```
+
+The remote machine must have ollama reachable on the network (start it with
+`OLLAMA_HOST=0.0.0.0 ollama serve` so it listens beyond localhost).
 
 Models are declared in `models/models.json`:
 
