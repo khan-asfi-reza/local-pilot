@@ -42,6 +42,7 @@ func (a *Agent) Run(ctx context.Context, req Request, emit func(events.Event), c
 		SkillNames: a.skills.names,
 		Seen:       map[string]bool{},
 		Procs:      tools.NewProcSet(),
+		Sandboxed:  req.Sandbox,
 	}
 	defer env.Procs.StopAll()
 	conv := append([]model.Message(nil), req.Messages...)
@@ -89,6 +90,7 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 				conv = append(conv, model.Message{Role: "user", Content: "Before finishing, verify completeness: list_dir to confirm EVERY file the task asked for actually exists, and confirm each check (test/build/curl) truly returned the expected result, not just exited. If any requested file is missing or any result is wrong, keep working with tools. Only if everything is genuinely done and verified, reply with your final summary."})
 				continue
 			}
+			text = finalText(text)
 			emit(events.Text(text))
 			conv = append(conv, model.Message{Role: "assistant", Content: text})
 			emit(events.Done())
@@ -180,6 +182,7 @@ func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event
 			if text == "" {
 				text = act.Reasoning
 			}
+			text = finalText(text)
 			emit(events.Text(text))
 			conv = append(conv, model.Message{Role: "assistant", Content: text})
 			emit(events.Done())
@@ -270,6 +273,16 @@ func (a *Agent) chatStep(ctx context.Context, system string, conv []model.Messag
 		budget = budget * 2 / 3
 	}
 	return model.Message{}, 0, lastErr
+}
+
+// finalText guards against a blank final answer (some models, e.g. thinking
+// models in the wrong mode, return empty content) so the UI never shows an
+// empty reply.
+func finalText(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "I couldn't produce a response for that. Try rephrasing, or switch models with the picker."
+	}
+	return s
 }
 
 // isContextError reports whether a backend error looks like the prompt exceeded

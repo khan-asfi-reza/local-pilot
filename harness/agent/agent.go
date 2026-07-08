@@ -31,6 +31,7 @@ type Request struct {
 	Allowed  []string
 	Mode     string
 	WorkDir  string
+	Sandbox  bool // web path: run code_run in an isolated sandbox, not the project
 }
 
 // New builds an agent from a config and an optional skills directory.

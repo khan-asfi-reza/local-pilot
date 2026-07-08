@@ -110,19 +110,25 @@ func serveTool() *Tool {
 	}
 }
 
-// codeRunTool runs a short snippet in an isolated temporary directory. It has no
-// access to the project files, since it runs outside the working directory.
+// codeRunTool runs a short snippet. On the web path (env.Sandboxed) it runs in
+// an isolated temp dir with a bare environment and no project access. In the
+// terminal it runs in the working directory with the inherited environment, so
+// the snippet can import and exercise the project's own files.
 // Network isolation is not enforced by the OS here yet; this is the seam where a
 // stronger sandbox (a container or jail) would slot in without changing callers.
 func codeRunTool() *Tool {
 	return &Tool{
 		Name:        "code_run",
-		Description: "Run a short code snippet in an isolated sandbox and return its output. No access to the project files or the host. Use to test logic or compute something, not to modify the project.",
+		Description: "Run a short code snippet (python or javascript) and return its output. In the terminal it runs in the project's working directory, so it can import and use the project's files; in web chats it runs in an isolated sandbox with no project access.",
 		Params:      json.RawMessage(`{"type":"object","properties":{"language":{"type":"string","enum":["python","javascript"],"description":"Language of the snippet."},"code":{"type":"string","description":"The code to run."},"stdin":{"type":"string","description":"Optional standard input to feed the program."}},"required":["language","code"]}`),
 		Mutating:    true,
 		WebSafe:     true,
 		Preview: func(env Env, args Args) (string, *events.Diff, error) {
-			return fmt.Sprintf("run %s snippet in sandbox", args.Str("language")), nil, nil
+			where := "sandbox"
+			if !env.Sandboxed && env.WorkDir != "" {
+				where = "working directory"
+			}
+			return fmt.Sprintf("run %s snippet in %s", args.Str("language"), where), nil, nil
 		},
 		Run: func(env Env, args Args) (any, *events.Diff, error) {
 			lang := args.Str("language")
@@ -130,11 +136,6 @@ func codeRunTool() *Tool {
 			if code == "" {
 				return nil, nil, fmt.Errorf("code is required")
 			}
-			dir, err := os.MkdirTemp("", "harness-sandbox-")
-			if err != nil {
-				return nil, nil, err
-			}
-			defer os.RemoveAll(dir)
 
 			var file, bin string
 			switch lang {
@@ -145,20 +146,49 @@ func codeRunTool() *Tool {
 			default:
 				return nil, nil, fmt.Errorf("unsupported language %q", lang)
 			}
-			path := filepath.Join(dir, file)
+
+			sandboxed := env.Sandboxed || env.WorkDir == ""
+			// Choose where the snippet lives and runs. Sandboxed: an isolated temp
+			// dir. Otherwise: a uniquely named file inside the project so its cwd
+			// and import path are the project itself.
+			var runDir, path string
+			if sandboxed {
+				dir, err := os.MkdirTemp("", "harness-sandbox-")
+				if err != nil {
+					return nil, nil, err
+				}
+				defer os.RemoveAll(dir)
+				runDir, path = dir, filepath.Join(dir, file)
+			} else {
+				runDir = env.WorkDir
+				ext := filepath.Ext(file)
+				f, err := os.CreateTemp(env.WorkDir, ".harness_snippet_*"+ext)
+				if err != nil {
+					return nil, nil, err
+				}
+				path = f.Name()
+				f.Close()
+				defer os.Remove(path)
+			}
 			if err := os.WriteFile(path, []byte(code), 0o644); err != nil {
 				return nil, nil, err
 			}
+
 			ctx, cancel := context.WithTimeout(env.Ctx, 30*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, bin, path)
-			cmd.Dir = dir
-			// Start from a bare environment so the snippet cannot read host secrets.
-			cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/local/bin", "HOME=" + dir}
+			cmd.Dir = runDir
+			if sandboxed {
+				// Bare environment so the snippet cannot read host secrets.
+				cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/local/bin", "HOME=" + runDir}
+			} else {
+				// Inherit the environment and make the project importable.
+				cmd.Env = append(os.Environ(), "PYTHONPATH="+runDir, "NODE_PATH="+runDir)
+			}
 			if in := args.Str("stdin"); in != "" {
 				cmd.Stdin = strings.NewReader(in)
 			}
-			return runCommand(cmd, bin+" "+file), nil, nil
+			return runCommand(cmd, bin+" "+filepath.Base(path)), nil, nil
 		},
 	}
 }

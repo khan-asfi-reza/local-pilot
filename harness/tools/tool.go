@@ -19,6 +19,10 @@ type Env struct {
 	SkillNames []string
 	Seen       map[string]bool
 	Procs      *ProcSet
+	// Sandboxed is set on the web path: code_run then executes in an isolated
+	// temp dir with no project access. In the terminal it is false, so code_run
+	// runs in the working directory and can import/use the project's files.
+	Sandboxed bool
 }
 
 // Args is a decoded tool-call argument object with typed getters.

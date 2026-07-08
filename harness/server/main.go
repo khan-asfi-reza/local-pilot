@@ -133,6 +133,7 @@ func main() {
 			Allowed:  allowed,
 			Mode:     "auto",
 			WorkDir:  req.WorkingDirectory,
+			Sandbox:  true, // the web path runs code_run in an isolated sandbox
 		}
 		// Switch to the request's model (falling back to the default) and run.
 		// Serialized so per-request model switching does not race.

@@ -383,7 +383,8 @@ func dirExists(p string) bool {
 
 // toolModeFor picks the tool-calling strategy by model size: small models (≤3B)
 // are unreliable at native tool calls, so they use the grammar-constrained JSON
-// path (enforced via ollama's response_format); larger models use native calls.
+// path (enforced via ollama's response_format); larger models — including the
+// qwen3 family, which handle native calls fine — use native tool calls.
 func toolModeFor(base string) string {
 	b := strings.ToLower(base)
 	for _, s := range []string{"0.5b", "1b", "1.5b", "2b", "3b"} {
