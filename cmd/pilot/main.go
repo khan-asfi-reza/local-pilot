@@ -7,9 +7,13 @@ import (
 	"slices"
 	"context"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -19,7 +23,25 @@ import (
 	"harness/terminal"
 )
 
-const defaultNumCtx = 32768
+// Default context windows by model size: capable models (>=4B) get a large
+// window, smaller ones a more memory-friendly one.
+const (
+	largeNumCtx = 250000
+	smallNumCtx = 100000
+)
+
+var sizeRe = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*b\b`)
+
+// numCtxFor picks the default context size from a model's parameter count:
+// >=4B → 250k, otherwise 100k (also the fallback when the size is unknown).
+func numCtxFor(name string) int {
+	if m := sizeRe.FindStringSubmatch(strings.ToLower(name)); m != nil {
+		if b, err := strconv.ParseFloat(m[1], 64); err == nil && b >= 4 {
+			return largeNumCtx
+		}
+	}
+	return smallNumCtx
+}
 
 func main() {
 	args := os.Args[1:]
@@ -33,6 +55,8 @@ func main() {
 		err = start()
 	case "stop":
 		err = stop()
+	case "web":
+		err = web()
 	case "models":
 		err = modelsCmd(args[1:])
 	case "code":
@@ -68,37 +92,252 @@ func fatal(err error) {
 
 // start sets up ollama and a model, then reports readiness.
 func start() error {
-	cfgPath, err := appdir.Ensure()
+	header()
+	_, name, err := ensureStack()
 	if err != nil {
 		return err
+	}
+	readyBanner(name)
+	return nil
+}
+
+// ensureStack brings ollama up and guarantees a default model is installed,
+// returning the config path and the model name. Shared by `start` and `web`.
+func ensureStack() (cfgPath, name string, err error) {
+	cfgPath, err = appdir.Ensure()
+	if err != nil {
+		return
 	}
 	cfg, err := model.LoadConfig(cfgPath)
 	if err != nil {
-		return err
+		return
 	}
+	if err = ensureOllamaInstalled(); err != nil {
+		return
+	}
+	if err = ensureOllama("http://localhost:11434"); err != nil {
+		return
+	}
+
+	name = cfg.Default
+	if name == "" || !modelInstalled(name) {
+		// first run, or the saved default is no longer installed: pick + build one.
+		base := chooseModelBase(cfg)
+		n, e := buildAndRegister(cfgPath, cfg, base)
+		if e != nil {
+			err = fmt.Errorf("could not install %q. Is that an ollama model? See https://ollama.com/library\n  %v", base, e)
+			return
+		}
+		name = n
+		cfg.Default = name
+		if err = cfg.Save(cfgPath); err != nil {
+			return
+		}
+	} else {
+		fmt.Println(green("✓ ") + name + dim(" already set up"))
+	}
+	return
+}
+
+// readyBanner prints the post-start summary: the default model, how to change it,
+// and the LAN address other machines on the network can point at.
+func readyBanner(name string) {
+	fmt.Println()
+	fmt.Println(green("✓ ") + bold("pilot ready"))
+	fmt.Println(dim("  data dir:       ") + appdir.Dir())
+	fmt.Println(bold("  Default Model:  ") + cyan(name))
+	fmt.Println(dim("  change default: ") + cyan("pilot models set-default <name>"))
+	if ip := localIP(); ip != "" {
+		fmt.Println(dim("  LAN access:     ") + cyan("http://"+ip+":11434"))
+		fmt.Println(dim("  add from another machine: ") + cyan("pilot models add <name> --host "+ip+":11434"))
+	}
+	fmt.Println(dim("  next:           ") + cyan("pilot code") + dim(" --dir <project>"))
+}
+
+// localIP returns this machine's primary LAN IPv4 address, or "" if none.
+func localIP() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	if addr, ok := conn.LocalAddr().(*net.UDPAddr); ok {
+		return addr.IP.String()
+	}
+	return ""
+}
+
+const (
+	harnessPort  = 9000
+	backendPort  = 8182
+	frontendPort = 5173
+)
+
+// web starts the full browser stack — harness-server, the FastAPI backend, and
+// the Vite frontend — opens the chat UI, and blocks until interrupted.
+func web() error {
 	header()
-	if err := ensureOllamaInstalled(); err != nil {
-		return err
-	}
-	if err := ensureOllama("http://localhost:11434"); err != nil {
+	cfgPath, name, err := ensureStack()
+	if err != nil {
 		return err
 	}
 
-	base := chooseModelBase(cfg)
-	name, err := buildAndRegister(cfgPath, cfg, base)
+	root, err := repoRoot()
 	if err != nil {
-		return fmt.Errorf("could not install %q. Is that an ollama model? See https://ollama.com/library\n  %v", base, err)
-	}
-	cfg.Default = name
-	if err := cfg.Save(cfgPath); err != nil {
 		return err
+	}
+	backendDir := filepath.Join(root, "backend")
+	frontendDir := filepath.Join(root, "frontend")
+	if !dirExists(backendDir) || !dirExists(frontendDir) {
+		return fmt.Errorf("run %s from the local-pilot project root (needs ./backend and ./frontend)", cyan("pilot web"))
+	}
+
+	frontendURL := fmt.Sprintf("http://localhost:%d", frontendPort)
+	backendURL := fmt.Sprintf("http://localhost:%d", backendPort)
+
+	var procs []*exec.Cmd
+	stopAll := func() {
+		for _, c := range procs {
+			killProcess(c)
+		}
+	}
+	defer stopAll()
+
+	// harness-server bridges the web backend to the model. Prefer the prebuilt
+	// binary; fall back to `go run` when it is not built yet.
+	var hs *exec.Cmd
+	if bin := filepath.Join(root, "bin", "harness-server"); fileExists(bin) {
+		hs = command(root, bin, "-port", strconv.Itoa(harnessPort), "-config", cfgPath)
+	} else {
+		hs = command(root, "go", "run", "./harness/server", "-port", strconv.Itoa(harnessPort), "-config", cfgPath)
+	}
+	// Bind 0.0.0.0 so other machines on the LAN can reach the backend and UI.
+	be := command(backendDir, pythonBin(backendDir), "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", strconv.Itoa(backendPort))
+	be.Env = append(os.Environ(),
+		"DATABASE_URL=sqlite:///./local-pilot.db",
+		fmt.Sprintf("HARNESS_URL=http://localhost:%d/run", harnessPort),
+	)
+	fe := command(frontendDir, npmBin(), "run", "dev", "--", "--host", "--port", strconv.Itoa(frontendPort))
+
+	fmt.Println(dim("… starting services"))
+	for _, c := range []*exec.Cmd{hs, be, fe} {
+		setProcGroup(c)
+		if e := c.Start(); e != nil {
+			return fmt.Errorf("start %s: %w", filepath.Base(c.Path), e)
+		}
+		procs = append(procs, c)
+	}
+
+	waitPort(harnessPort)
+	waitPort(backendPort)
+	if !waitPort(frontendPort) {
+		fmt.Println(yellow("• ") + "frontend still starting; give it a moment")
 	}
 
 	fmt.Println()
-	fmt.Println(green("✓ ") + bold("pilot ready") + dim(" — model "+name))
-	fmt.Println(dim("  data dir: ") + appdir.Dir())
-	fmt.Println(dim("  next: ") + cyan("pilot code") + dim(" --dir <project>"))
+	fmt.Println(green("✓ ") + bold("Local Pilot web is running"))
+	fmt.Println(bold("  Open:   ") + cyan(frontendURL))
+	fmt.Println(dim("  api:    ") + backendURL)
+	fmt.Println(dim("  model:  ") + name)
+	if ip := localIP(); ip != "" {
+		fmt.Println(dim("  on your LAN: ") + cyan(fmt.Sprintf("http://%s:%d", ip, frontendPort)))
+	}
+	fmt.Println(dim("  press Ctrl-C to stop"))
+	openBrowser(frontendURL)
+
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	<-sig
+	fmt.Println("\n" + dim("… stopping services"))
 	return nil
+}
+
+// command builds a child process rooted at dir with its output attached.
+func command(dir, name string, args ...string) *exec.Cmd {
+	c := exec.Command(name, args...)
+	c.Dir = dir
+	c.Stdout, c.Stderr = os.Stdout, os.Stderr
+	return c
+}
+
+// repoRoot walks up from the working directory to the folder holding go.mod.
+func repoRoot() (string, error) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	for {
+		if fileExists(filepath.Join(dir, "go.mod")) {
+			return dir, nil
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return os.Getwd()
+		}
+		dir = parent
+	}
+}
+
+// pythonBin prefers a backend virtualenv interpreter, else the system python.
+func pythonBin(backendDir string) string {
+	for _, rel := range [][]string{
+		{".venv", "bin", "python"}, {"venv", "bin", "python"},
+		{".venv", "Scripts", "python.exe"}, {"venv", "Scripts", "python.exe"},
+	} {
+		if p := filepath.Join(append([]string{backendDir}, rel...)...); fileExists(p) {
+			return p
+		}
+	}
+	if p, err := exec.LookPath("python3"); err == nil {
+		return p
+	}
+	return "python"
+}
+
+// npmBin returns the npm executable name for this OS.
+func npmBin() string {
+	if osName() == "windows" {
+		return "npm.cmd"
+	}
+	return "npm"
+}
+
+// waitPort polls a local TCP port until it accepts connections (up to ~30s).
+func waitPort(port int) bool {
+	addr := fmt.Sprintf("localhost:%d", port)
+	for range 60 {
+		conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return true
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+	return false
+}
+
+// openBrowser opens url in the default browser (best effort).
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch osName() {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Start()
+}
+
+func fileExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && !info.IsDir()
+}
+
+func dirExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
 }
 
 // toolModeFor picks the tool-calling strategy by model size: small models (≤3B)
@@ -118,7 +357,7 @@ func toolModeFor(base string) string {
 // template and num_ctx, and records it in models.json. Idempotent.
 func buildAndRegister(cfgPath string, cfg *model.Config, base string) (string, error) {
 	name := base + "-tools"
-	entry := model.ModelEntry{Name: name, Base: base, NumCtx: defaultNumCtx, ToolMode: toolModeFor(base), Port: 11434}
+	entry := model.ModelEntry{Name: name, Base: base, NumCtx: numCtxFor(base), ToolMode: toolModeFor(base), Port: 11434}
 	if !modelInstalled(name) {
 		if err := installModel(entry); err != nil {
 			return "", err
@@ -152,27 +391,21 @@ func chooseModelBase(cfg *model.Config) string {
 		}
 		fmt.Printf("  %s %s%s\n", cyan(strconv.Itoa(i+1)+"."), p, tag)
 	}
-	custom := len(presets) + 1
-	fmt.Printf("  %s %s\n", cyan(strconv.Itoa(custom)+"."), "Enter an ollama model name")
+	fmt.Println(dim("  or type any ollama model name, e.g. ") + "qwen2.5-coder:14b")
 
-	choice := strings.TrimSpace(promptLine(fmt.Sprintf("Select [1-%d] (Enter for default): ", custom)))
+	choice := strings.TrimSpace(promptLine(fmt.Sprintf("Select [1-%d], type a model name, or Enter for default: ", len(presets))))
 	if choice == "" {
 		return presets[0]
 	}
-	n, err := strconv.Atoi(choice)
-	if err != nil {
-		return presets[0]
-	}
-	if n >= 1 && n <= len(presets) {
-		return presets[n-1]
-	}
-	if n == custom {
-		name := strings.TrimSpace(promptLine("Enter ollama model name (e.g. qwen2.5-coder:7b): "))
-		if name != "" {
-			return name
+	// A bare number picks a preset; anything else is taken as a model name and
+	// looked up directly in ollama (no need to pick a "custom" option first).
+	if n, err := strconv.Atoi(choice); err == nil {
+		if n >= 1 && n <= len(presets) {
+			return presets[n-1]
 		}
+		return presets[0] // number out of range → default
 	}
-	return presets[0]
+	return choice
 }
 
 // ensureOllamaInstalled installs ollama if it is missing, with the user's consent.
@@ -344,7 +577,7 @@ func setDefaultModel(cfgPath string, cfg *model.Config, name string) error {
 		return fmt.Errorf("%q is not configured or installed locally. Add it with %s", name, cyan("pilot models add "+name))
 	}
 	if !registered(cfg, name) {
-		cfg.AddModel(model.ModelEntry{Name: name, ToolMode: toolModeFor(name), Port: 11434, NumCtx: defaultNumCtx})
+		cfg.AddModel(model.ModelEntry{Name: name, ToolMode: toolModeFor(name), Port: 11434, NumCtx: numCtxFor(name)})
 	}
 	cfg.Default = name
 	if err := cfg.Save(cfgPath); err != nil {
@@ -410,6 +643,10 @@ func ensureOllama(url string) error {
 	}
 	fmt.Println(dim("… starting ollama serve"))
 	cmd := exec.Command("ollama", "serve")
+	// Bind all interfaces so other machines on the LAN can use this model host.
+	if os.Getenv("OLLAMA_HOST") == "" {
+		cmd.Env = append(os.Environ(), "OLLAMA_HOST=0.0.0.0:11434")
+	}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start ollama: %w", err)
 	}

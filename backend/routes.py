@@ -12,12 +12,22 @@ from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
 from appdir import sandbox_for
-from database import get_session, init_db
+from database import get_engine, get_session, init_db
 from harness_client import HARNESS_URL, list_models, stream_harness_turn
 from schemas import Message as DBMessage
 from schemas import Thread
 
 router = APIRouter()
+
+# Hold references to background tasks so the event loop does not garbage-collect
+# them before they finish.
+_bg_tasks: set = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
 
 
 def _now() -> datetime:
@@ -167,6 +177,42 @@ def delete_thread(thread_id: str, session: Session = Depends(get_session)) -> di
     return {"deleted": True}
 
 
+async def _generate_title(thread_id: str, question: str, answer: str, model: str | None) -> None:
+    """Ask the model for a short title from the first exchange, then save it. Runs
+    in the background so it does not delay the reply."""
+    prompt = (
+        "Write a very short title (3 to 6 words, Title Case, no quotes, no trailing "
+        "punctuation) summarizing this conversation. Reply with ONLY the title.\n\n"
+        f"User: {question}\nAssistant: {answer[:600]}"
+    )
+    parts: list[str] = []
+    try:
+        async for ev in stream_harness_turn([{"role": "user", "content": prompt}], model=model):
+            t = ev.get("type")
+            if t == "text":
+                parts.append(ev.get("content", ""))
+            elif t in ("done", "error"):
+                break
+    except Exception:
+        return
+    title = "".join(parts).strip()
+    title = title.splitlines()[0].strip().strip('"').strip() if title else ""
+    if not title:
+        return
+    if len(title) > 60:
+        title = title[:60]
+    try:
+        with Session(get_engine()) as s:
+            th = s.get(Thread, thread_id)
+            if th:
+                th.title = title
+                th.updated_at = _now()
+                s.add(th)
+                s.commit()
+    except Exception:
+        return
+
+
 @router.post("/threads/{thread_id}/messages")
 async def send_message(thread_id: str, request: Request, session: Session = Depends(get_session)) -> StreamingResponse:
     body = await request.json()
@@ -178,7 +224,9 @@ async def send_message(thread_id: str, request: Request, session: Session = Depe
     if not thread:
         raise HTTPException(status_code=404, detail="thread not found")
 
-    if not thread.title.strip():
+    existing = session.exec(select(DBMessage).where(DBMessage.thread_id == thread_id)).all()
+    is_first = len(existing) == 0
+    if is_first:
         thread.title = content[:40]
         session.add(thread)
         session.commit()
@@ -218,6 +266,10 @@ async def send_message(thread_id: str, request: Request, session: Session = Depe
                     session.add(thread)
                     session.commit()
                     yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"
+                    # After the first exchange, title the thread from the Q+A in the
+                    # background so it does not delay the response.
+                    if is_first and assistant_text.strip():
+                        _spawn(_generate_title(thread_id, content, assistant_text, thread.model))
                     break
                 else:
                     yield f"event: {event_type}\ndata: {json.dumps(event)}\n\n"

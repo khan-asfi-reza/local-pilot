@@ -1,6 +1,8 @@
-// Thin client for the local-pilot backend (FastAPI on :6000). CORS is configured
-// there for the Vite dev origin, so absolute URLs work in development.
-const BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// Thin client for the local-pilot backend (FastAPI on :8182). The base is
+// derived from the page's own host so the app works both on localhost and when
+// opened from another machine on the LAN (http://<mac-ip>:5173 → :8182).
+const BASE =
+  import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8182`;
 
 async function json(res) {
   if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
@@ -51,12 +53,20 @@ export async function deleteThread(id) {
 
 // sendMessage POSTs the message and streams the server-sent events back, calling
 // onEvent for each parsed event ({type:'text'|'tool_call'|'tool_result'|'error'|'done', ...}).
-export async function sendMessage(id, content, onEvent) {
-  const res = await fetch(`${BASE}/threads/${id}/messages`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ content }),
-  });
+// Pass an AbortSignal to stop the stream (the pause button).
+export async function sendMessage(id, content, onEvent, signal) {
+  let res;
+  try {
+    res = await fetch(`${BASE}/threads/${id}/messages`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ content }),
+      signal,
+    });
+  } catch (e) {
+    if (e?.name !== 'AbortError') onEvent({ type: 'error', message: String(e) });
+    return;
+  }
   if (!res.ok || !res.body) {
     onEvent({ type: 'error', message: `request failed (${res.status})` });
     return;
@@ -64,22 +74,26 @@ export async function sendMessage(id, content, onEvent) {
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    let sep;
-    while ((sep = buffer.indexOf('\n\n')) >= 0) {
-      const frame = buffer.slice(0, sep);
-      buffer = buffer.slice(sep + 2);
-      const dataLine = frame.split('\n').find((l) => l.startsWith('data:'));
-      if (dataLine) {
-        try {
-          onEvent(JSON.parse(dataLine.slice(5).trim()));
-        } catch {
-          /* ignore malformed frame */
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let sep;
+      while ((sep = buffer.indexOf('\n\n')) >= 0) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        const dataLine = frame.split('\n').find((l) => l.startsWith('data:'));
+        if (dataLine) {
+          try {
+            onEvent(JSON.parse(dataLine.slice(5).trim()));
+          } catch {
+            /* ignore malformed frame */
+          }
         }
       }
     }
+  } catch (e) {
+    if (e?.name !== 'AbortError') onEvent({ type: 'error', message: String(e) });
   }
 }

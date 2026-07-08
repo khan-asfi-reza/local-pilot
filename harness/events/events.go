@@ -47,7 +47,9 @@ type Event struct {
 
 func Text(content string) Event { return Event{Type: "text", Content: content} }
 
-func ToolCall(tool, info string) Event { return Event{Type: "tool_call", Tool: tool, Info: info} }
+func ToolCall(tool, info, input string) Event {
+	return Event{Type: "tool_call", Tool: tool, Info: info, Data: input}
+}
 
 func ToolResult(tool, info, data string, diff *Diff) Event {
 	return Event{Type: "tool_result", Tool: tool, Info: info, Data: data, Diff: diff}

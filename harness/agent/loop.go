@@ -95,7 +95,7 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 
 		anyFailure := false
 		for _, tc := range msg.ToolCalls {
-			emit(events.ToolCall(tc.Function.Name, summarizeCall(tc)))
+			emit(events.ToolCall(tc.Function.Name, summarizeCall(tc), tc.Function.Arguments))
 			result, diff := a.reg.Dispatch(tc, req.Allowed, req.Mode, env, confirm)
 			emit(events.ToolResult(tc.Function.Name, shortResult(result), result, diff))
 
@@ -188,7 +188,7 @@ func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event
 			Type:     "function",
 			Function: model.FunctionCall{Name: act.Tool, Arguments: string(argsJSON)},
 		}
-		emit(events.ToolCall(tc.Function.Name, summarizeCall(tc)))
+		emit(events.ToolCall(tc.Function.Name, summarizeCall(tc), tc.Function.Arguments))
 		result, diff := a.reg.Dispatch(tc, req.Allowed, req.Mode, env, confirm)
 		emit(events.ToolResult(tc.Function.Name, shortResult(result), result, diff))
 

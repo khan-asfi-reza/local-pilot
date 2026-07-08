@@ -77,6 +77,7 @@ func helpText() string {
 	b.WriteString(bold("COMMANDS") + "\n")
 	rows := [][2]string{
 		{"start", "set up ollama and pick a model, then you're ready"},
+		{"web", "run the browser chat stack and open it in your browser"},
 		{"stop", "stop the ollama server"},
 		{"models add <model> [--host URL]", "add a model (local, or from another ollama server)"},
 		{"models list", "show configured models, their server, and the default"},
@@ -91,6 +92,8 @@ func helpText() string {
 	b.WriteString("\n" + bold("EXAMPLES") + "\n")
 	b.WriteString("  " + dim("# first-time setup") + "\n")
 	b.WriteString("  " + cyan("pilot start") + "\n")
+	b.WriteString("  " + dim("# chat in your browser") + "\n")
+	b.WriteString("  " + cyan("pilot web") + "\n")
 	b.WriteString("  " + dim("# work in a project") + "\n")
 	b.WriteString("  " + cyan("pilot code --dir ~/my-app") + "\n")
 	b.WriteString("  " + dim("# one-shot task") + "\n")

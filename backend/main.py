@@ -8,10 +8,12 @@ from routes import router
 
 def create_app() -> FastAPI:
     app = FastAPI()
+    # Allow any origin: this is a local/LAN dev tool with no auth cookies, so the
+    # UI may be opened from localhost or from another machine on the network.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
-        allow_credentials=True,
+        allow_origins=["*"],
+        allow_credentials=False,
         allow_methods=["*"],
         allow_headers=["*"],
     )

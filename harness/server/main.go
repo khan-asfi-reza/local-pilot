@@ -6,7 +6,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -113,8 +112,9 @@ func main() {
 		runMu.Lock()
 		defer runMu.Unlock()
 		ag.UseSessionModel(req.Model)
-		// The web path never pauses for confirmation, so confirm is nil.
-		ag.Run(context.Background(), agentReq, emit, nil)
+		// The web path never pauses for confirmation, so confirm is nil. The
+		// request context cancels the turn when the client disconnects (pause).
+		ag.Run(r.Context(), agentReq, emit, nil)
 	})
 
 	addr := fmt.Sprintf(":%d", *port)
