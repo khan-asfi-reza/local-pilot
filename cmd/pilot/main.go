@@ -636,10 +636,24 @@ func stop() error {
 }
 
 // ensureOllama makes sure the ollama server answers, starting it if it does not.
+// It also guarantees ollama is bound to all interfaces so other machines on the
+// LAN can use this host — restarting a localhost-only server if needed.
 func ensureOllama(url string) error {
+	persistOllamaLANHost()
 	if ollamaUp(url) {
-		fmt.Println(green("✓ ") + "ollama running")
-		return nil
+		if ollamaReachableOnLAN() {
+			fmt.Println(green("✓ ") + "ollama running")
+			return nil
+		}
+		// Up, but bound to localhost only: rebind it so the LAN can reach it.
+		fmt.Println(yellow("• ") + "ollama bound to localhost only — rebinding for LAN access")
+		killOllama()
+		for range 10 {
+			if !ollamaUp(url) {
+				break
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
 	}
 	fmt.Println(dim("… starting ollama serve"))
 	cmd := exec.Command("ollama", "serve")
@@ -658,6 +672,39 @@ func ensureOllama(url string) error {
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("ollama did not come up on %s", url)
+}
+
+// ollamaReachableOnLAN reports whether ollama answers on this machine's LAN IP
+// (not just localhost). True when there is no LAN address to expose.
+func ollamaReachableOnLAN() bool {
+	ip := localIP()
+	if ip == "" {
+		return true
+	}
+	return ollamaUp("http://" + ip + ":11434")
+}
+
+// persistOllamaLANHost sets OLLAMA_HOST=0.0.0.0:11434 persistently so future
+// ollama launches (including the desktop app) bind to the LAN. Best effort.
+func persistOllamaLANHost() {
+	if os.Getenv("OLLAMA_HOST") != "" {
+		return
+	}
+	switch osName() {
+	case "darwin":
+		_ = exec.Command("launchctl", "setenv", "OLLAMA_HOST", "0.0.0.0:11434").Run()
+	case "windows":
+		_ = exec.Command("setx", "OLLAMA_HOST", "0.0.0.0:11434").Run()
+	}
+}
+
+// killOllama stops any running ollama server (so it can be rebound).
+func killOllama() {
+	if osName() == "windows" {
+		_ = exec.Command("taskkill", "/F", "/IM", "ollama.exe").Run()
+		return
+	}
+	_ = exec.Command("pkill", "-x", "ollama").Run()
 }
 
 func ollamaUp(url string) bool {
