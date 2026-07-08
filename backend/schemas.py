@@ -9,6 +9,7 @@ from sqlmodel import Field, SQLModel
 class Thread(SQLModel, table=True):
     id: str | None = Field(default=None, primary_key=True)
     title: str = ""
+    model: str | None = None
     created_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
     updated_at: dt.datetime = Field(default_factory=dt.datetime.utcnow)
 

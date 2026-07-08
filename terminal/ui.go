@@ -896,7 +896,10 @@ func (u *ui) command(cmd string) {
 	case "/auto":
 		u.setMode("auto")
 	case "/clear":
-		u.session.Messages = nil
+		// Start a new session (preserving the old one), keeping the model and mode.
+		model, mode := u.session.Model, u.session.Mode
+		u.session = newSession()
+		u.session.Model, u.session.Mode = model, mode
 		_ = u.session.save(u.workDir)
 		u.out.Clear()
 		u.banner()

@@ -186,6 +186,8 @@ func ensureOllamaInstalled() error {
 		return fmt.Errorf("ollama is required. Install it from https://ollama.com/download and re-run %s", cyan("pilot start"))
 	}
 	switch osName() {
+	case "windows":
+		return stream("powershell", "-NoProfile", "-Command", "irm https://ollama.com/install.ps1 | iex")
 	case "linux":
 		return stream("sh", "-c", "curl -fsSL https://ollama.com/install.sh | sh")
 	case "darwin":

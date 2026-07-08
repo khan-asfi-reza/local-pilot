@@ -71,6 +71,9 @@ func (a *Agent) SetMaxSteps(n int) {
 // ActiveModel returns the model currently in use, for the status line.
 func (a *Agent) ActiveModel() string { return a.router.Active() }
 
+// DefaultModel returns the configured default model name.
+func (a *Agent) DefaultModel() string { return a.cfg.Default }
+
 // ModelStatus describes a registered model and whether its backend is running.
 type ModelStatus struct {
 	Name    string
@@ -114,6 +117,32 @@ func (a *Agent) Reachable(name string) bool {
 
 // SetModel switches the active model to another registered name.
 func (a *Agent) SetModel(name string) error { return a.cfg.SetActive(name) }
+
+// UseSessionModel activates a session's preferred model when it is configured
+// and installed, otherwise falls back to the default. Returns the model in use.
+func (a *Agent) UseSessionModel(preferred string) string {
+	def := a.cfg.Default
+	fallback := func() string {
+		if def != "" {
+			_ = a.cfg.SetActive(def)
+			return def
+		}
+		return a.cfg.ActiveName()
+	}
+	if preferred == "" {
+		return fallback()
+	}
+	if err := a.cfg.SetActive(preferred); err != nil {
+		return fallback()
+	}
+	url, _ := a.cfg.URLFor(preferred)
+	for _, n := range a.router.InstalledModelsAt(url) {
+		if n == preferred {
+			return preferred
+		}
+	}
+	return fallback()
+}
 
 // UseModel switches the active model and persists it as the default. If the name
 // is not registered but is installed in ollama, it is added first. Returns an

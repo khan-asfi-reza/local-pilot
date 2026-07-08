@@ -38,10 +38,6 @@ func Code(args []string) {
 	}
 
 	session := loadSession(workDir)
-	// Restore the model the user chose in a previous session, if still valid.
-	if session.Model != "" {
-		_ = cfg.SetActive(session.Model)
-	}
 
 	skills := *skillsDir
 	if skills == "" {
@@ -57,10 +53,9 @@ func Code(args []string) {
 		fatal("%v", err)
 	}
 
-	// Prefer a model whose backend is actually running: the current selection if
-	// up, otherwise the first running model, so the session starts on something
-	// usable.
-	pickRunningModel(ag)
+	// Resume the session on its own model, falling back to the default if that
+	// model is not configured or not installed.
+	ag.UseSessionModel(session.Model)
 
 	if err := newUI(ag, session, workDir).run(); err != nil {
 		fatal("%v", err)

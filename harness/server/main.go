@@ -12,8 +12,10 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
 
 	"harness/harness/agent"
+	"harness/harness/appdir"
 	"harness/harness/events"
 	"harness/harness/model"
 )
@@ -22,18 +24,32 @@ import (
 // search, never file, shell, or code-intelligence tools.
 var safeTools = []string{"code_run", "web_search"}
 
+// runMu serializes runs: the agent switches its active model per request, which
+// must not race across concurrent runs.
+var runMu sync.Mutex
+
 type runRequest struct {
 	Messages         []model.Message `json:"messages"`
 	AllowedTools     []string        `json:"allowed_tools"`
 	WorkingDirectory string          `json:"working_directory"`
+	Model            string          `json:"model"`
 }
 
 func main() {
 	port := flag.Int("port", 9000, "port to listen on")
-	configPath := flag.String("config", "models/models.json", "path to the model registry")
+	configPath := flag.String("config", "", "path to the model registry (default: the local-pilot config)")
 	flag.Parse()
 
-	cfg, err := model.LoadConfig(*configPath)
+	cfgPath := *configPath
+	if cfgPath == "" {
+		p, err := appdir.Ensure()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "harness-server: %v\n", err)
+			os.Exit(1)
+		}
+		cfgPath = p
+	}
+	cfg, err := model.LoadConfig(cfgPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "harness-server: %v\n", err)
 		os.Exit(1)
@@ -45,6 +61,24 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+
+	// GET /models lists the configured models with readiness and the default, so
+	// a client can offer a model picker.
+	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
+		type modelJSON struct {
+			Name   string `json:"name"`
+			Ready  bool   `json:"ready"`
+			URL    string `json:"url"`
+			Active bool   `json:"active"`
+		}
+		var list []modelJSON
+		for _, m := range ag.Models() {
+			list = append(list, modelJSON{Name: m.Name, Ready: m.Running, URL: m.URL, Active: m.Active})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"models": list, "default": ag.DefaultModel()})
+	})
+
 	mux.HandleFunc("/run", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
@@ -74,6 +108,11 @@ func main() {
 			Mode:     "auto",
 			WorkDir:  req.WorkingDirectory,
 		}
+		// Switch to the request's model (falling back to the default) and run.
+		// Serialized so per-request model switching does not race.
+		runMu.Lock()
+		defer runMu.Unlock()
+		ag.UseSessionModel(req.Model)
 		// The web path never pauses for confirmation, so confirm is nil.
 		ag.Run(context.Background(), agentReq, emit, nil)
 	})

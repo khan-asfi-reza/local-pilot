@@ -11,8 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
+from appdir import sandbox_for
 from database import get_session, init_db
-from harness_client import HARNESS_URL, stream_harness_turn
+from harness_client import HARNESS_URL, list_models, stream_harness_turn
 from schemas import Message as DBMessage
 from schemas import Thread
 
@@ -21,6 +22,16 @@ router = APIRouter()
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _thread_json(thread: Thread) -> dict[str, Any]:
+    return {
+        "id": thread.id,
+        "title": thread.title,
+        "model": thread.model,
+        "created_at": thread.created_at.isoformat(),
+        "updated_at": thread.updated_at.isoformat(),
+    }
 
 
 def _message_to_payload(message: DBMessage) -> dict[str, Any]:
@@ -88,19 +99,33 @@ def health() -> dict[str, Any]:
     return {"ok": reachable, "harness": reachable}
 
 
+@router.get("/models")
+async def models() -> dict[str, Any]:
+    """List the models the harness offers, with the default, for the picker."""
+    try:
+        return await list_models()
+    except Exception as exc:
+        return {"models": [], "default": None, "error": str(exc)}
+
+
 @router.post("/threads", status_code=200)
-def create_thread(session: Session = Depends(get_session)) -> dict[str, Any]:
-    thread = Thread(id=str(uuid.uuid4()), title="New thread")
+async def create_thread(request: Request, session: Session = Depends(get_session)) -> dict[str, Any]:
+    body: dict[str, Any] = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    thread = Thread(id=str(uuid.uuid4()), title=(body.get("title") or "New thread"), model=body.get("model"))
     session.add(thread)
     session.commit()
     session.refresh(thread)
-    return {"thread": {"id": thread.id, "title": thread.title, "created_at": thread.created_at.isoformat(), "updated_at": thread.updated_at.isoformat()}}
+    return {"thread": _thread_json(thread)}
 
 
 @router.get("/threads")
 def list_threads(session: Session = Depends(get_session)) -> list[dict[str, Any]]:
     threads = session.exec(select(Thread).order_by(Thread.updated_at.desc())).all()
-    return [{"id": thread.id, "title": thread.title, "created_at": thread.created_at.isoformat(), "updated_at": thread.updated_at.isoformat()} for thread in threads]
+    return [_thread_json(thread) for thread in threads]
 
 
 @router.get("/threads/{thread_id}")
@@ -110,9 +135,24 @@ def get_thread(thread_id: str, session: Session = Depends(get_session)) -> dict[
         raise HTTPException(status_code=404, detail="thread not found")
     messages = session.exec(select(DBMessage).where(DBMessage.thread_id == thread_id).order_by(DBMessage.created_at.asc())).all()
     return {
-        "thread": {"id": thread.id, "title": thread.title, "created_at": thread.created_at.isoformat(), "updated_at": thread.updated_at.isoformat()},
+        "thread": _thread_json(thread),
         "messages": [_serialize_message(message) for message in messages],
     }
+
+
+@router.post("/threads/{thread_id}/model")
+async def set_thread_model(thread_id: str, request: Request, session: Session = Depends(get_session)) -> dict[str, Any]:
+    """Set the model for a session; it is used for that session's runs."""
+    body = await request.json()
+    thread = session.get(Thread, thread_id)
+    if not thread:
+        raise HTTPException(status_code=404, detail="thread not found")
+    thread.model = body.get("model")
+    thread.updated_at = _now()
+    session.add(thread)
+    session.commit()
+    session.refresh(thread)
+    return {"thread": _thread_json(thread)}
 
 
 @router.delete("/threads/{thread_id}")
@@ -147,11 +187,14 @@ async def send_message(thread_id: str, request: Request, session: Session = Depe
 
     history = session.exec(select(DBMessage).where(DBMessage.thread_id == thread_id).order_by(DBMessage.created_at.asc())).all()
     harness_messages = _build_harness_messages(history)
+    # Each web thread runs in its own sandbox under the data dir, so any files or
+    # code it produces are isolated per session.
+    workdir = sandbox_for(thread_id)
 
     async def event_stream() -> AsyncIterator[str]:
         assistant_content_parts: list[str] = []
         try:
-            async for event in stream_harness_turn(harness_messages):
+            async for event in stream_harness_turn(harness_messages, working_directory=workdir, model=thread.model):
                 event_type = event.get("type")
                 if event_type == "text":
                     content_piece = event.get("content", "")
