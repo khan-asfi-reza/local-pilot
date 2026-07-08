@@ -121,20 +121,36 @@ export function ChatWindow() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const endRef = useRef(null);
+  const scrollRef = useRef(null);
+  const atBottomRef = useRef(true); // is the user parked at the bottom?
 
   const messages = (activeThread?.messages || []).filter(
     (m) => m.role === 'user' || m.role === 'assistant' || m.role === 'tool' || m.role === 'note',
   );
 
+  const onScroll = () => {
+    const el = scrollRef.current;
+    if (el) atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+  };
+
+  // Follow new output only when the user is already at the bottom, so scrolling
+  // up to read isn't yanked back down on every streamed token.
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (atBottomRef.current) endRef.current?.scrollIntoView({ behavior: 'auto' });
   }, [messages.length, activeThread, busy]);
+
+  // On thread switch, jump to the bottom and reset the follow state.
+  useEffect(() => {
+    atBottomRef.current = true;
+    endRef.current?.scrollIntoView({ behavior: 'auto' });
+  }, [activeThreadId]);
 
   const handleSend = async (event) => {
     event.preventDefault();
     if (!draft.trim() || busy) return;
     const text = draft.trim();
     setDraft('');
+    atBottomRef.current = true; // snap to bottom to follow the new exchange
     setBusy(true);
     await send(text);
     setBusy(false);
@@ -230,7 +246,7 @@ export function ChatWindow() {
           </div>
         </header>
 
-        <div className="flex-1 overflow-y-auto">
+        <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto">
           <div className="mx-auto max-w-3xl px-4 py-6">
             {loading ? (
               <div className="mt-24 text-center text-sm text-zinc-500">Loading…</div>

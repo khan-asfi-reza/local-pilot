@@ -21,6 +21,7 @@ type Agent struct {
 	prompt        *Prompt
 	maxSteps      int
 	contextTokens int
+	log           *auditLog
 }
 
 // Request is one turn of work. It carries everything the harness needs, since
@@ -54,7 +55,23 @@ func New(cfg *model.Config, skillsDir string) (*Agent, error) {
 		prompt:        prompt,
 		maxSteps:      25,
 		contextTokens: contextTokens,
+		log:           newAuditLog(),
 	}, nil
+}
+
+// Reload re-reads the model registry from disk so models added by `pilot models
+// add` appear without restarting. Rebuilds the config and router; tools, skills,
+// and step limits are unchanged.
+func (a *Agent) Reload(cfgPath string) error {
+	cfg, err := model.LoadConfig(cfgPath)
+	if err != nil {
+		return err
+	}
+	a.cfg = cfg
+	a.router = model.NewRouter(cfg, model.NewClient())
+	a.prompt = LoadPrompt(cfg.Dir())
+	a.reg.SetDescriptions(a.prompt.Tools)
+	return nil
 }
 
 // ToolNames returns every tool the harness knows, which the terminal uses as the

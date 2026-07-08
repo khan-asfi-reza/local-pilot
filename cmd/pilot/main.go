@@ -192,6 +192,12 @@ func web() error {
 		return fmt.Errorf("run %s from the local-pilot project root (needs ./backend and ./frontend)", cyan("pilot web"))
 	}
 
+	// Free the stack ports so re-running `pilot web` restarts cleanly instead of
+	// colliding with a previous run (ollama on 11434 is left alone).
+	for _, p := range []int{harnessPort, backendPort, frontendPort} {
+		freePort(p)
+	}
+
 	frontendURL := fmt.Sprintf("http://localhost:%d", frontendPort)
 	backendURL := fmt.Sprintf("http://localhost:%d", backendPort)
 
@@ -300,6 +306,41 @@ func npmBin() string {
 		return "npm.cmd"
 	}
 	return "npm"
+}
+
+// freePort kills whatever is listening on a local TCP port, so a restart can
+// rebind it. Best effort and OS-specific.
+func freePort(port int) {
+	if osName() == "windows" {
+		out, err := exec.Command("netstat", "-ano", "-p", "tcp").Output()
+		if err != nil {
+			return
+		}
+		needle := fmt.Sprintf(":%d", port)
+		seen := map[string]bool{}
+		for _, line := range strings.Split(string(out), "\n") {
+			if !strings.Contains(line, needle) || !strings.Contains(line, "LISTENING") {
+				continue
+			}
+			f := strings.Fields(line)
+			if len(f) == 0 {
+				continue
+			}
+			pid := f[len(f)-1]
+			if pid != "0" && !seen[pid] {
+				seen[pid] = true
+				_ = exec.Command("taskkill", "/F", "/PID", pid).Run()
+			}
+		}
+		return
+	}
+	out, err := exec.Command("lsof", "-ti", fmt.Sprintf("tcp:%d", port)).Output()
+	if err != nil {
+		return
+	}
+	for _, pid := range strings.Fields(string(out)) {
+		_ = exec.Command("kill", pid).Run()
+	}
 }
 
 // waitPort polls a local TCP port until it accepts connections (up to ~30s).

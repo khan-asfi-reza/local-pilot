@@ -23,6 +23,14 @@ type action struct {
 // returning the conversation for the caller to persist. The active model's
 // tool_mode picks native tool calls (default) or the grammar-JSON fallback.
 func (a *Agent) Run(ctx context.Context, req Request, emit func(events.Event), confirm tools.ConfirmFunc) []model.Message {
+	a.log.turn(a.router.Active(), string(req.Mode), req.WorkDir, req.Messages)
+	if a.log != nil {
+		userEmit := emit
+		emit = func(ev events.Event) {
+			a.log.event(ev)
+			userEmit(ev)
+		}
+	}
 	agentsMD := discoverAgentsMD(req.WorkDir)
 	repoMap := buildRepoMap(req.WorkDir)
 	includeMutating := req.Mode != tools.ModePlan
@@ -227,8 +235,10 @@ func (a *Agent) planStep(ctx context.Context, system string, conv []model.Messag
 	var lastErr error
 	for attempt := 0; attempt < 6; attempt++ {
 		msgs := compact(system, conv, budget)
+		a.log.request(msgs, nil)
 		raw, tokens, err := a.router.Constrained(ctx, msgs, schema)
 		if err == nil {
+			a.log.response(raw, nil, tokens)
 			return raw, tokens, nil
 		}
 		lastErr = err
@@ -247,8 +257,10 @@ func (a *Agent) chatStep(ctx context.Context, system string, conv []model.Messag
 	var lastErr error
 	for attempt := 0; attempt < 6; attempt++ {
 		msgs := compact(system, conv, budget)
+		a.log.request(msgs, defs)
 		msg, tokens, err := a.router.Chat(ctx, msgs, defs)
 		if err == nil {
+			a.log.response(msg.Content, msg.ToolCalls, tokens)
 			return msg, tokens, nil
 		}
 		lastErr = err

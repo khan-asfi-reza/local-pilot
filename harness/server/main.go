@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sync"
+	"time"
 
 	"harness/harness/agent"
 	"harness/harness/appdir"
@@ -59,11 +61,35 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Reload the registry when models.json changes on disk (e.g. `pilot models
+	// add`), so new models appear without restarting the server.
+	mjson := filepath.Join(cfg.Dir(), "models.json")
+	var cfgMu sync.Mutex
+	var lastMod time.Time
+	if info, e := os.Stat(mjson); e == nil {
+		lastMod = info.ModTime()
+	}
+	reloadIfChanged := func() {
+		cfgMu.Lock()
+		defer cfgMu.Unlock()
+		info, e := os.Stat(mjson)
+		if e != nil || !info.ModTime().After(lastMod) {
+			return
+		}
+		runMu.Lock()
+		e = ag.Reload(cfgPath)
+		runMu.Unlock()
+		if e == nil {
+			lastMod = info.ModTime()
+		}
+	}
+
 	mux := http.NewServeMux()
 
 	// GET /models lists the configured models with readiness and the default, so
 	// a client can offer a model picker.
 	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
+		reloadIfChanged()
 		type modelJSON struct {
 			Name   string `json:"name"`
 			Ready  bool   `json:"ready"`
@@ -83,6 +109,7 @@ func main() {
 			http.Error(w, "POST only", http.StatusMethodNotAllowed)
 			return
 		}
+		reloadIfChanged() // pick up newly added models before selecting one
 		var req runRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
