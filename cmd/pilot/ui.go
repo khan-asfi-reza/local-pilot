@@ -82,6 +82,7 @@ func helpText() string {
 		{"models add <model> [--host URL]", "add a model (local, or from another ollama server)"},
 		{"models list", "show configured models, their server, and the default"},
 		{"models set-default", "pick the default from your configured models"},
+		{"context [tokens|auto]", "show or set the ollama context window (restarts ollama)"},
 		{"code [--dir DIR]", "open the interactive coding agent"},
 		{"run --dir DIR --task \"…\"", "run one task headless (--task-file, --max-steps, --format)"},
 		{"help", "show this help"},

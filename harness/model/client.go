@@ -1,6 +1,7 @@
 package model
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -92,17 +93,57 @@ type fullResponse struct {
 }
 
 type chatRequest struct {
-	Model       string          `json:"model"`
-	Messages    []Message       `json:"messages"`
-	Tools       []ToolDef       `json:"tools,omitempty"`
-	Stream      bool            `json:"stream"`
-	Temperature float64         `json:"temperature"`
-	CachePrompt bool            `json:"cache_prompt,omitempty"`
-	JSONSchema  json.RawMessage `json:"json_schema,omitempty"`
+	Model         string          `json:"model"`
+	Messages      []Message       `json:"messages"`
+	Tools         []ToolDef       `json:"tools,omitempty"`
+	Stream        bool            `json:"stream"`
+	StreamOptions *streamOptions  `json:"stream_options,omitempty"`
+	Temperature   float64         `json:"temperature"`
+	CachePrompt   bool            `json:"cache_prompt,omitempty"`
+	JSONSchema    json.RawMessage `json:"json_schema,omitempty"`
 }
 
-func (c *Client) Chat(ctx context.Context, url, model string, msgs []Message, defs []ToolDef) (Message, int, error) {
-	body := chatRequest{Model: model, Messages: msgs, Tools: defs, Stream: false, Temperature: 0.2}
+type streamOptions struct {
+	IncludeUsage bool `json:"include_usage"`
+}
+
+// streamChunk is one Server-Sent Event from a streamed /v1 completion. The final
+// chunk carries usage with an empty Choices list.
+type streamChunk struct {
+	Choices []struct {
+		Delta struct {
+			Content   string `json:"content"`
+			Reasoning string `json:"reasoning"`
+			ToolCalls []struct {
+				Index    int    `json:"index"`
+				ID       string `json:"id"`
+				Type     string `json:"type"`
+				Function struct {
+					Name      string `json:"name"`
+					Arguments string `json:"arguments"`
+				} `json:"function"`
+			} `json:"tool_calls"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage struct {
+		TotalTokens int `json:"total_tokens"`
+	} `json:"usage"`
+}
+
+// Chat runs one native tool-calling turn, streaming the response. onDelta (when
+// non-nil) is called for each token as it arrives — kind "content" for the answer
+// and "reasoning" for the model's thinking — so the UI updates live. The fully
+// assembled message and total token count are returned when the stream ends.
+func (c *Client) Chat(ctx context.Context, url, model string, msgs []Message, defs []ToolDef, onDelta func(kind, text string)) (Message, int, error) {
+	body := chatRequest{
+		Model:         model,
+		Messages:      msgs,
+		Tools:         defs,
+		Stream:        true,
+		StreamOptions: &streamOptions{IncludeUsage: true},
+		Temperature:   0.2,
+	}
 	buf, err := json.Marshal(body)
 	if err != nil {
 		return Message{}, 0, err
@@ -122,14 +163,75 @@ func (c *Client) Chat(ctx context.Context, url, model string, msgs []Message, de
 		b, _ := io.ReadAll(resp.Body)
 		return Message{}, 0, fmt.Errorf("backend returned %s: %s", resp.Status, strings.TrimSpace(string(b)))
 	}
-	var full fullResponse
-	if err := json.NewDecoder(resp.Body).Decode(&full); err != nil {
-		return Message{}, 0, fmt.Errorf("decode completion: %w", err)
+
+	var content, reasoning strings.Builder
+	toolAcc := map[int]*ToolCall{}
+	var order []int
+	tokens := 0
+
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		var chunk streamChunk
+		if json.Unmarshal([]byte(data), &chunk) != nil {
+			continue
+		}
+		if chunk.Usage.TotalTokens > 0 {
+			tokens = chunk.Usage.TotalTokens
+		}
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		d := chunk.Choices[0].Delta
+		if d.Content != "" {
+			content.WriteString(d.Content)
+			if onDelta != nil {
+				onDelta("content", d.Content)
+			}
+		}
+		if d.Reasoning != "" {
+			reasoning.WriteString(d.Reasoning)
+			if onDelta != nil {
+				onDelta("reasoning", d.Reasoning)
+			}
+		}
+		for _, tc := range d.ToolCalls {
+			acc, ok := toolAcc[tc.Index]
+			if !ok {
+				acc = &ToolCall{Type: "function"}
+				toolAcc[tc.Index] = acc
+				order = append(order, tc.Index)
+			}
+			if tc.ID != "" {
+				acc.ID = tc.ID
+			}
+			if tc.Function.Name != "" {
+				acc.Function.Name = tc.Function.Name
+			}
+			acc.Function.Arguments += tc.Function.Arguments
+		}
 	}
-	if len(full.Choices) == 0 {
-		return Message{}, 0, fmt.Errorf("model returned no choices")
+	if err := sc.Err(); err != nil {
+		return Message{}, 0, fmt.Errorf("read stream from %s: %w", url, err)
 	}
-	return full.Choices[0].Message, full.Usage.TotalTokens, nil
+
+	msg := Message{Role: "assistant", Content: content.String(), Reasoning: reasoning.String()}
+	for _, i := range order {
+		tc := toolAcc[i]
+		if tc.ID == "" {
+			tc.ID = fmt.Sprintf("call_%d", i)
+		}
+		msg.ToolCalls = append(msg.ToolCalls, *tc)
+	}
+	return msg, tokens, nil
 }
 
 func (c *Client) CompleteConstrained(ctx context.Context, url, model string, msgs []Message, schema json.RawMessage) (string, int, error) {

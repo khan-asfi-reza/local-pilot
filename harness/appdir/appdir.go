@@ -43,10 +43,12 @@ func Dir() string {
 }
 
 // Ensure creates the data dir and populates it from the embedded defaults,
-// mirroring the repo layout so the config, prompt, and skill loaders resolve
-// unchanged. models.json is user state: seeded only if missing, never clobbered.
-// prompt.json and skills are shipped content: refreshed whenever the binary's
-// embedded version changes, so fixes propagate on upgrade. Returns models.json.
+// mirroring the repo layout so the config and skill loaders resolve unchanged.
+// The local dir holds only config and model info: models.json is user state,
+// seeded only if missing and never clobbered. The system prompt is NOT placed
+// here — it is loaded from the binary's embedded models/prompt.json. Skills are
+// shipped content, refreshed whenever the embedded version changes so fixes
+// propagate on upgrade. Returns models.json.
 func Ensure() (string, error) {
 	dir := Dir()
 	if err := place(dir, "models/models.json", false); err != nil {
@@ -58,9 +60,6 @@ func Ensure() (string, error) {
 	have, _ := os.ReadFile(verPath)
 	refresh := string(have) != want
 
-	if err := place(dir, "models/prompt.json", refresh); err != nil {
-		return "", err
-	}
 	if err := placeTree(dir, "skills", refresh); err != nil {
 		return "", err
 	}

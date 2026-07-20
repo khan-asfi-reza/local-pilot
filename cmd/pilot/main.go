@@ -13,7 +13,6 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -22,26 +21,6 @@ import (
 	"harness/harness/model"
 	"harness/terminal"
 )
-
-// Default context windows by model size: capable models (>=4B) get a large
-// window, smaller ones a more memory-friendly one.
-const (
-	largeNumCtx = 250000
-	smallNumCtx = 100000
-)
-
-var sizeRe = regexp.MustCompile(`(\d+(?:\.\d+)?)\s*b\b`)
-
-// numCtxFor picks the default context size from a model's parameter count:
-// >=4B → 250k, otherwise 100k (also the fallback when the size is unknown).
-func numCtxFor(name string) int {
-	if m := sizeRe.FindStringSubmatch(strings.ToLower(name)); m != nil {
-		if b, err := strconv.ParseFloat(m[1], 64); err == nil && b >= 4 {
-			return largeNumCtx
-		}
-	}
-	return smallNumCtx
-}
 
 func main() {
 	args := os.Args[1:]
@@ -59,6 +38,8 @@ func main() {
 		err = web()
 	case "models":
 		err = modelsCmd(args[1:])
+	case "context":
+		err = contextCmd(args[1:])
 	case "code":
 		cfgPath, e := appdir.Ensure()
 		if e != nil {
@@ -115,7 +96,7 @@ func ensureStack() (cfgPath, name string, err error) {
 	if err = ensureOllamaInstalled(); err != nil {
 		return
 	}
-	if err = ensureOllama("http://localhost:11434"); err != nil {
+	if err = ensureOllama("http://localhost:11434", desiredContextLength(cfg)); err != nil {
 		return
 	}
 
@@ -395,17 +376,42 @@ func toolModeFor(base string) string {
 	return model.ToolModeNative
 }
 
-// buildAndRegister pulls base, creates the <base>-tools variant with the tool-call
-// template and num_ctx, and records it in models.json. Idempotent.
+// needsToolTemplate reports whether a base model needs the tool-call template
+// edit. Only qwen2.5-coder does: it emits [tool_call] reliably but not the
+// <tool_call> tags the OpenAI-compatible path expects. Every other family emits
+// native tool calls unedited, so it is used directly with no derived model.
+func needsToolTemplate(base string) bool {
+	return strings.Contains(strings.ToLower(base), "qwen2.5-coder")
+}
+
+// buildAndRegister installs base and records it in models.json, returning the
+// model name to use. Models that need the tool-call template edit get a derived
+// <base>-tools variant (and the base copy is removed); all others are registered
+// and used directly. Context size is not baked — it is set globally via
+// OLLAMA_CONTEXT_LENGTH. Idempotent.
 func buildAndRegister(cfgPath string, cfg *model.Config, base string) (string, error) {
-	name := base + "-tools"
-	entry := model.ModelEntry{Name: name, Base: base, NumCtx: numCtxFor(base), ToolMode: toolModeFor(base), Port: 11434}
-	if !modelInstalled(name) {
-		if err := installModel(entry); err != nil {
-			return "", err
+	name := base
+	var entry model.ModelEntry
+	if needsToolTemplate(base) {
+		name = base + "-tools"
+		entry = model.ModelEntry{Name: name, Base: base, ToolMode: toolModeFor(base), Port: 11434}
+		if !modelInstalled(name) {
+			if err := installModel(entry); err != nil {
+				return "", err
+			}
+		} else {
+			fmt.Println(green("✓ ") + name + dim(" already installed"))
 		}
 	} else {
-		fmt.Println(green("✓ ") + name + dim(" already installed"))
+		entry = model.ModelEntry{Name: base, ToolMode: toolModeFor(base), Port: 11434}
+		if !modelInstalled(base) {
+			fmt.Println(dim("… pulling ") + base + dim(" (one-time download)"))
+			if err := stream("ollama", "pull", base); err != nil {
+				return "", fmt.Errorf("pull %s: %w", base, err)
+			}
+		} else {
+			fmt.Println(green("✓ ") + base + dim(" already installed"))
+		}
 	}
 	cfg.AddModel(entry)
 	if err := cfg.Save(cfgPath); err != nil {
@@ -497,7 +503,7 @@ func modelsCmd(args []string) error {
 		if host != "" {
 			return addRemoteModel(cfgPath, cfg, base, host)
 		}
-		if err := ensureOllama("http://localhost:11434"); err != nil {
+		if err := ensureOllama("http://localhost:11434", desiredContextLength(cfg)); err != nil {
 			return err
 		}
 		name, err := buildAndRegister(cfgPath, cfg, base)
@@ -517,6 +523,79 @@ func modelsCmd(args []string) error {
 	default:
 		return fmt.Errorf("unknown: pilot models %s (try add, list, or set-default)", args[0])
 	}
+}
+
+// contextCmd shows or sets the ollama context window. With no argument it prints
+// the machine profile and the size in effect; with a number (or "auto") it saves
+// the choice and restarts ollama so the new window takes effect immediately.
+func contextCmd(args []string) error {
+	cfgPath, err := appdir.Ensure()
+	if err != nil {
+		return err
+	}
+	cfg, err := model.LoadConfig(cfgPath)
+	if err != nil {
+		return err
+	}
+	hw := detectHardware()
+	auto := pickContextLength(hw)
+
+	if len(args) == 0 {
+		fmt.Println(bold("Ollama context length"))
+		fmt.Printf("%s%d GiB RAM", dim("  hardware:  "), hw.RAMGiB)
+		if hw.VRAMGiB > 0 {
+			fmt.Printf(", %d GiB VRAM", hw.VRAMGiB)
+		}
+		if hw.AppleSilicon {
+			fmt.Print(", Apple Silicon")
+		}
+		fmt.Println()
+		fmt.Printf("%s%d tokens\n", dim("  auto-size: "), auto)
+		if cfg.ContextLength > 0 {
+			fmt.Printf("%s%d tokens (override)\n", dim("  in use:    "), cfg.ContextLength)
+		} else {
+			fmt.Printf("%s%d tokens (auto)\n", dim("  in use:    "), auto)
+		}
+		fmt.Println(dim("  set with:  ") + cyan("pilot context <tokens>") + dim(" or ") + cyan("pilot context auto"))
+		return nil
+	}
+
+	var n int
+	if strings.EqualFold(args[0], "auto") {
+		n = 0
+	} else {
+		v, e := strconv.Atoi(args[0])
+		if e != nil || v < ctxMin {
+			return fmt.Errorf("context length must be a number >= %d, or \"auto\"", ctxMin)
+		}
+		n = v
+	}
+	cfg.ContextLength = n
+	if err := cfg.Save(cfgPath); err != nil {
+		return err
+	}
+
+	effective := desiredContextLength(cfg)
+	url := "http://localhost:11434"
+	if ollamaUp(url) {
+		fmt.Println(dim("… restarting ollama"))
+		killOllama()
+		for range 10 {
+			if !ollamaUp(url) {
+				break
+			}
+			time.Sleep(300 * time.Millisecond)
+		}
+	}
+	if err := ensureOllama(url, effective); err != nil {
+		return err
+	}
+	label := fmt.Sprintf("%d tokens", effective)
+	if n == 0 {
+		label += " (auto)"
+	}
+	fmt.Println(green("✓ ") + "context length is now " + bold(label))
+	return nil
 }
 
 // parseAddArgs pulls the model name and optional --host URL out of add's args.
@@ -619,7 +698,7 @@ func setDefaultModel(cfgPath string, cfg *model.Config, name string) error {
 		return fmt.Errorf("%q is not configured or installed locally. Add it with %s", name, cyan("pilot models add "+name))
 	}
 	if !registered(cfg, name) {
-		cfg.AddModel(model.ModelEntry{Name: name, ToolMode: toolModeFor(name), Port: 11434, NumCtx: numCtxFor(name)})
+		cfg.AddModel(model.ModelEntry{Name: name, ToolMode: toolModeFor(name), Port: 11434})
 	}
 	cfg.Default = name
 	if err := cfg.Save(cfgPath); err != nil {
@@ -679,9 +758,15 @@ func stop() error {
 
 // ensureOllama makes sure the ollama server answers, starting it if it does not.
 // It also guarantees ollama is bound to all interfaces so other machines on the
-// LAN can use this host — restarting a localhost-only server if needed.
-func ensureOllama(url string) error {
+// LAN can use this host — restarting a localhost-only server if needed. ctxLen,
+// when > 0, is the OLLAMA_CONTEXT_LENGTH the server is launched with (and
+// persisted for future launches); it only takes effect on a server this call
+// starts, so a already-running server keeps its window until `pilot context`.
+func ensureOllama(url string, ctxLen int) error {
 	persistOllamaLANHost()
+	if ctxLen > 0 {
+		persistOllamaContext(ctxLen)
+	}
 	if ollamaUp(url) {
 		if ollamaReachableOnLAN() {
 			fmt.Println(green("✓ ") + "ollama running")
@@ -699,10 +784,17 @@ func ensureOllama(url string) error {
 	}
 	fmt.Println(dim("… starting ollama serve"))
 	cmd := exec.Command("ollama", "serve")
+	env := os.Environ()
 	// Bind all interfaces so other machines on the LAN can use this model host.
 	if os.Getenv("OLLAMA_HOST") == "" {
-		cmd.Env = append(os.Environ(), "OLLAMA_HOST=0.0.0.0:11434")
+		env = append(env, "OLLAMA_HOST=0.0.0.0:11434")
 	}
+	// Size the context window to this machine; our value wins so sizing is
+	// predictable regardless of any inherited env.
+	if ctxLen > 0 {
+		env = append(env, fmt.Sprintf("OLLAMA_CONTEXT_LENGTH=%d", ctxLen))
+	}
+	cmd.Env = env
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start ollama: %w", err)
 	}
@@ -740,6 +832,27 @@ func persistOllamaLANHost() {
 	}
 }
 
+// persistOllamaContext records OLLAMA_CONTEXT_LENGTH persistently so future
+// ollama launches (including the desktop app) use the same window. Best effort.
+func persistOllamaContext(n int) {
+	v := strconv.Itoa(n)
+	switch osName() {
+	case "darwin":
+		_ = exec.Command("launchctl", "setenv", "OLLAMA_CONTEXT_LENGTH", v).Run()
+	case "windows":
+		_ = exec.Command("setx", "OLLAMA_CONTEXT_LENGTH", v).Run()
+	}
+}
+
+// desiredContextLength is the OLLAMA_CONTEXT_LENGTH to run with: the user's saved
+// override when set, otherwise the size that fits this machine's hardware.
+func desiredContextLength(cfg *model.Config) int {
+	if cfg != nil && cfg.ContextLength > 0 {
+		return cfg.ContextLength
+	}
+	return pickContextLength(detectHardware())
+}
+
 // killOllama stops any running ollama server (so it can be rebound).
 func killOllama() {
 	if osName() == "windows" {
@@ -765,7 +878,9 @@ func modelInstalled(name string) bool {
 	return exec.Command("ollama", "show", name).Run() == nil
 }
 
-// installModel pulls the base model and creates the customized local model.
+// installModel pulls the base model, creates the edited <base>-tools variant,
+// then removes the base copy. Only called for models that need the tool-call
+// template edit (see needsToolTemplate).
 func installModel(entry model.ModelEntry) error {
 	base := entry.Base
 	if base == "" {
@@ -775,8 +890,8 @@ func installModel(entry model.ModelEntry) error {
 	if err := stream("ollama", "pull", base); err != nil {
 		return fmt.Errorf("pull %s: %w", base, err)
 	}
-	fmt.Printf("%screating %s (tool-call template + num_ctx %d)\n", dim("… "), entry.Name, entry.NumCtx)
-	mf, err := buildModelfile(base, entry.NumCtx)
+	fmt.Printf("%screating %s (tool-call template)\n", dim("… "), entry.Name)
+	mf, err := buildModelfile(base)
 	if err != nil {
 		return err
 	}
@@ -789,26 +904,29 @@ func installModel(entry model.ModelEntry) error {
 		return err
 	}
 	tmp.Close()
-	return stream("ollama", "create", entry.Name, "-f", tmp.Name())
+	if err := stream("ollama", "create", entry.Name, "-f", tmp.Name()); err != nil {
+		return err
+	}
+	// The derived model is self-contained (its own weight blob), so drop the base
+	// copy to reclaim disk — only the edited model is ever used.
+	if base != entry.Name {
+		fmt.Println(dim("… removing base copy ") + base)
+		_ = stream("ollama", "rm", base)
+	}
+	return nil
 }
 
-// buildModelfile derives the local Modelfile from the base and bakes in num_ctx.
-// For qwen2.5-coder ONLY, it swaps the <tool_call> tags to [tool_call], which
-// that family emits reliably; other models emit <tool_call> natively, so their
-// template is left untouched (swapping it would break their tool-call parsing).
-func buildModelfile(base string, numCtx int) (string, error) {
+// buildModelfile derives the local Modelfile from the base, swapping the
+// <tool_call> tags to [tool_call], which qwen2.5-coder emits reliably. Context
+// size is set globally via OLLAMA_CONTEXT_LENGTH, so nothing is baked here.
+func buildModelfile(base string) (string, error) {
 	out, err := exec.Command("ollama", "show", base, "--modelfile").Output()
 	if err != nil {
 		return "", fmt.Errorf("read base modelfile: %w", err)
 	}
 	mf := string(out)
-	if strings.Contains(strings.ToLower(base), "qwen2.5-coder") {
-		mf = strings.ReplaceAll(mf, "</tool_call>", "[/tool_call]")
-		mf = strings.ReplaceAll(mf, "<tool_call>", "[tool_call]")
-	}
-	if numCtx > 0 && !strings.Contains(mf, "num_ctx") {
-		mf += fmt.Sprintf("\nPARAMETER num_ctx %d\n", numCtx)
-	}
+	mf = strings.ReplaceAll(mf, "</tool_call>", "[/tool_call]")
+	mf = strings.ReplaceAll(mf, "<tool_call>", "[tool_call]")
 	return mf, nil
 }
 

@@ -27,6 +27,32 @@ type runResult struct {
 
 // shellRunTool runs a shell command in the working directory. It can run
 // anything, so it is always mutating.
+// projectEnv returns the process environment with framework/database config vars
+// stripped, so a command building or running a NEW project in the working
+// directory is not hijacked by ANOTHER project's settings inherited from the
+// user's shell (e.g. DJANGO_SETTINGS_MODULE or DATABASE_URL pointing elsewhere,
+// which silently redirect the fresh project and cause baffling import errors).
+func projectEnv(extra ...string) []string {
+	drop := map[string]bool{
+		"DJANGO_SETTINGS_MODULE": true, "DJANGO_CONFIGURATION": true,
+		"FLASK_APP": true, "FLASK_ENV": true, "FLASK_DEBUG": true,
+		"RAILS_ENV": true, "RACK_ENV": true, "ASPNETCORE_ENVIRONMENT": true,
+		"NODE_ENV": true,
+	}
+	var out []string
+	for _, kv := range os.Environ() {
+		k := kv
+		if i := strings.IndexByte(kv, '='); i >= 0 {
+			k = kv[:i]
+		}
+		if drop[k] || strings.Contains(k, "DATABASE_URL") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, extra...)
+}
+
 func shellRunTool() *Tool {
 	return &Tool{
 		Name:        "shell_run",
@@ -57,6 +83,7 @@ func shellRunTool() *Tool {
 			defer cancel()
 			cmd := newShellCmd(ctx, command)
 			cmd.Dir = env.WorkDir
+			cmd.Env = projectEnv()
 			return runCommand(cmd, command), nil, nil
 		},
 	}
@@ -83,6 +110,7 @@ func serveTool() *Tool {
 
 			cmd := newShellCmd(context.Background(), command)
 			cmd.Dir = env.WorkDir
+			cmd.Env = projectEnv()
 			// Own process group so the whole server tree can be killed at turn end.
 			setProcGroup(cmd)
 			var log bytes.Buffer
@@ -182,8 +210,9 @@ func codeRunTool() *Tool {
 				// Bare environment so the snippet cannot read host secrets.
 				cmd.Env = []string{"PATH=/usr/bin:/bin:/usr/local/bin", "HOME=" + runDir}
 			} else {
-				// Inherit the environment and make the project importable.
-				cmd.Env = append(os.Environ(), "PYTHONPATH="+runDir, "NODE_PATH="+runDir)
+				// Inherit the environment (minus other projects' framework config)
+				// and make this project importable.
+				cmd.Env = projectEnv("PYTHONPATH="+runDir, "NODE_PATH="+runDir)
 			}
 			if in := args.Str("stdin"); in != "" {
 				cmd.Stdin = strings.NewReader(in)

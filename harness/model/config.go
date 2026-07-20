@@ -14,10 +14,8 @@ type ModelEntry struct {
 	Port     int    `json:"port"`
 	ToolMode string `json:"tool_mode,omitempty"`
 	Template string `json:"template,omitempty"`
-	// Base is the ollama model tag to pull and derive this local model from.
+	// Base is the ollama model tag this derived (-tools) model was built from.
 	Base string `json:"base,omitempty"`
-	// NumCtx is the runtime context window baked into the created model.
-	NumCtx int `json:"num_ctx,omitempty"`
 	// Host is the ollama server this model lives on, e.g. http://192.168.1.50:11434.
 	// Empty means the local server on Port.
 	Host string `json:"host,omitempty"`
@@ -50,6 +48,9 @@ const (
 type Config struct {
 	AssetsDir     string       `json:"assets_dir,omitempty"`
 	ContextTokens int          `json:"context_tokens"`
+	// ContextLength is the saved OLLAMA_CONTEXT_LENGTH override; 0 means auto-size
+	// from the machine's hardware at launch.
+	ContextLength int          `json:"ollama_context_length,omitempty"`
 	Default       string       `json:"default"`
 	Models        []ModelEntry `json:"models"`
 	// Suggested is the list of base ollama models the start menu offers; the first

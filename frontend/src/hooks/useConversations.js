@@ -105,6 +105,21 @@ export function useConversations() {
       return { ...prev, messages };
     });
 
+  // appendReasoning adds streamed thinking to the trailing assistant message (or
+  // starts one), kept separate from the answer so the UI can show it dimmed.
+  const appendReasoning = (text) =>
+    setActiveThread((prev) => {
+      if (!prev) return prev;
+      const messages = [...prev.messages];
+      const last = messages[messages.length - 1];
+      if (last && last.role === 'assistant') {
+        messages[messages.length - 1] = { ...last, reasoning: (last.reasoning || '') + text };
+      } else {
+        messages.push({ id: uid('a'), role: 'assistant', content: '', reasoning: text });
+      }
+      return { ...prev, messages };
+    });
+
   // startTool appends a tool step (with the input it was called with) in order.
   const startTool = (ev) =>
     setActiveThread((prev) => {
@@ -149,6 +164,7 @@ export function useConversations() {
         content,
         (ev) => {
           if (ev.type === 'text') appendText(ev.content || '');
+          else if (ev.type === 'reasoning') appendReasoning(ev.content || '');
           else if (ev.type === 'tool_call') startTool(ev);
           else if (ev.type === 'tool_result') finishTool(ev);
           else if (ev.type === 'error') appendText(`\n\n[error] ${ev.message || ''}`);

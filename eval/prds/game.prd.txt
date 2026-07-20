@@ -1,0 +1,16 @@
+Build a small terminal game in Python, in the current directory.
+
+Game: a number-guessing game.
+- The program picks a random integer between 1 and 100.
+- The player types guesses; after each guess the program prints "higher" or "lower".
+- When the player guesses correctly, print the number of attempts and exit.
+
+Structure the project so the logic is testable:
+- game.py: the interactive loop (reads input, prints hints).
+- logic.py: a pure function check_guess(secret, guess) -> "higher" | "lower" | "correct". No I/O in this module.
+- test_logic.py: pytest tests for check_guess covering higher, lower, and correct cases.
+
+Requirements:
+- Use only the Python standard library (plus pytest for tests).
+- Run the tests yourself with pytest and confirm they pass before finishing.
+- Add a short README.md explaining how to play and how to run the tests.

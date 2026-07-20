@@ -70,8 +70,20 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 	finishNudged := false
 	usedTools := false
 
+	// onDelta streams the model's tokens live: the answer as text, the thinking as
+	// reasoning. Content is therefore already shown by the time a turn returns, so
+	// the branches below do not re-emit it.
+	onDelta := func(kind, text string) {
+		switch kind {
+		case "content":
+			emit(events.Text(text))
+		case "reasoning":
+			emit(events.Reasoning(text))
+		}
+	}
+
 	for step := 0; step < a.maxSteps; step++ {
-		msg, tokens, err := a.chatStep(ctx, system, conv, defs)
+		msg, tokens, err := a.chatStep(ctx, system, conv, defs, onDelta)
 		if err != nil {
 			emit(events.Error(err.Error()))
 			return conv
@@ -82,6 +94,11 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 		// No tool calls: the model is giving its final answer.
 		if len(msg.ToolCalls) == 0 {
 			text := strings.TrimSpace(msg.Content)
+			// A thinking-only turn (all reasoning, no answer) still has something to
+			// show; fall back to the reasoning so the turn is never blank.
+			if text == "" {
+				text = strings.TrimSpace(msg.Reasoning)
+			}
 			// Nudge once before accepting the finish, but only if the turn actually
 			// did tool work — a plain answer or chat reply finishes immediately.
 			if !finishNudged && usedTools {
@@ -90,18 +107,14 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 				conv = append(conv, model.Message{Role: "user", Content: "Before finishing, verify completeness: list_dir to confirm EVERY file the task asked for actually exists, and confirm each check (test/build/curl) truly returned the expected result, not just exited. If any requested file is missing or any result is wrong, keep working with tools. Only if everything is genuinely done and verified, reply with your final summary."})
 				continue
 			}
-			text = finalText(text)
-			emit(events.Text(text))
-			conv = append(conv, model.Message{Role: "assistant", Content: text})
+			// The answer streamed live via onDelta; only append it and close out.
+			conv = append(conv, model.Message{Role: "assistant", Content: finalText(text)})
 			emit(events.Done())
 			return conv
 		}
 
 		conv = append(conv, msg)
 		usedTools = true
-		if reasoning := strings.TrimSpace(msg.Content); reasoning != "" {
-			emit(events.Text(reasoning + "\n"))
-		}
 
 		anyFailure := false
 		for _, tc := range msg.ToolCalls {
@@ -159,9 +172,17 @@ func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event
 	seen := map[string]int{}
 	totalTokens := 0
 	debugInjected := false
+	writesSinceRun := 0 // file writes since the last time anything was executed
+	runNudged := false
+	editFails := map[string]int{} // failed edit_file attempts per path
+	editNudged := map[string]bool{}
 
 	for step := 0; step < a.maxSteps; step++ {
-		raw, tokens, err := a.planStep(ctx, system, conv, schema)
+		// Refresh the working-directory tree each step so the model always sees the
+		// current layout (including files it just created) without spending a
+		// list_dir call to re-orient.
+		liveSystem := system + "\n\nCURRENT FILES in the working directory (refreshed every step):\n" + currentTree(env.WorkDir)
+		raw, tokens, err := a.planStep(ctx, liveSystem, conv, schema)
 		if err != nil {
 			emit(events.Error(err.Error()))
 			return conv
@@ -203,17 +224,50 @@ func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event
 		result, diff := a.reg.Dispatch(tc, req.Allowed, req.Mode, env, confirm)
 		emit(events.ToolResult(tc.Function.Name, shortResult(result), result, diff))
 
-		// Stop if the same action keeps producing the same result, even when the
-		// model alternates between a couple of them.
-		key := tc.Function.Name + "|" + tc.Function.Arguments + "|" + shortResult(result)
-		if seen[key]++; seen[key] >= 3 {
-			emit(events.Error("stopping: the assistant keeps repeating actions with no new result. Rephrase the task or break it into smaller steps."))
-			return conv
-		}
-
 		// Record the step and feed the observation back for the next turn.
 		conv = append(conv, model.Message{Role: "assistant", Content: raw})
 		conv = append(conv, model.Message{Role: "user", Content: fmt.Sprintf("Result of %s:\n%s", tc.Function.Name, result)})
+
+		// Detect a repeated action with the same result. Rather than hard-stop on
+		// the first repeat, nudge the model to change course; only give up if it
+		// keeps repeating, and then finish with a progress summary, not a bare error.
+		key := tc.Function.Name + "|" + tc.Function.Arguments + "|" + shortResult(result)
+		seen[key]++
+		if seen[key] == 2 {
+			conv = append(conv, model.Message{Role: "user", Content: "You just repeated the SAME action and got the SAME result. Do not run it again. Read that result carefully and take a genuinely different next step — fix the actual file the error names, or use a different tool. If the task is already complete, give your final answer instead."})
+		} else if seen[key] >= 3 {
+			summary := stuckSummary(env.WorkDir, result)
+			emit(events.Text(summary))
+			conv = append(conv, model.Message{Role: "assistant", Content: summary})
+			emit(events.Done())
+			return conv
+		}
+
+		// Break write-churn: a small model tends to keep rewriting files it has
+		// never executed, chasing imagined bugs. After several writes with no
+		// execution, force it to RUN the project for real error output.
+		switch tc.Function.Name {
+		case "shell_run", "code_run", "serve":
+			writesSinceRun = 0
+			runNudged = false
+		case "write_file", "edit_file":
+			writesSinceRun++
+		}
+		if writesSinceRun >= 5 && !runNudged {
+			conv = append(conv, model.Message{Role: "user", Content: "You have written several files without running anything. STOP writing more files. Install dependencies if needed, then RUN the project (its tests, or start the server and curl it) to get REAL error output, and fix based on that actual output. Running gives ground truth that re-reading your own code cannot — do not rewrite files you have not executed."})
+			runNudged = true
+		}
+
+		// edit_file keeps failing when the model's old_text is not actually in the
+		// file. After two failures on a file, force a full rewrite with write_file.
+		if tc.Function.Name == "edit_file" && strings.Contains(result, "old_text not found") {
+			p, _ := act.Arguments["path"].(string)
+			editFails[p]++
+			if editFails[p] >= 2 && !editNudged[p] {
+				conv = append(conv, model.Message{Role: "user", Content: "edit_file has failed repeatedly on " + p + " because your old_text is not present in the file. Do NOT use edit_file on this file again. Instead call write_file with path " + p + " and the ENTIRE corrected file content (every line), which replaces the file completely."})
+				editNudged[p] = true
+			}
+		}
 
 		// The first time something fails, inject the debug procedure, since a
 		// small model will not reliably load it on its own.
@@ -225,7 +279,9 @@ func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event
 		}
 	}
 
-	emit(events.Error(fmt.Sprintf("reached the step limit of %d without finishing", a.maxSteps)))
+	summary := stuckSummary(env.WorkDir, fmt.Sprintf("reached the step limit of %d", a.maxSteps))
+	emit(events.Text(summary))
+	emit(events.Done())
 	return conv
 }
 
@@ -254,14 +310,16 @@ func (a *Agent) planStep(ctx context.Context, system string, conv []model.Messag
 }
 
 // chatStep asks the model for one native tool-calling turn, compacting to fit the
-// context budget and shrinking it on overflow. Mirrors planStep.
-func (a *Agent) chatStep(ctx context.Context, system string, conv []model.Message, defs []model.ToolDef) (model.Message, int, error) {
+// context budget and shrinking it on overflow. Mirrors planStep. onDelta streams
+// tokens as they arrive; an overflow surfaces as a non-200 before any token, so a
+// retry never double-emits.
+func (a *Agent) chatStep(ctx context.Context, system string, conv []model.Message, defs []model.ToolDef, onDelta func(kind, text string)) (model.Message, int, error) {
 	budget := a.contextTokens
 	var lastErr error
 	for attempt := 0; attempt < 6; attempt++ {
 		msgs := compact(system, conv, budget)
 		a.log.request(msgs, defs)
-		msg, tokens, err := a.router.Chat(ctx, msgs, defs)
+		msg, tokens, err := a.router.Chat(ctx, msgs, defs, onDelta)
 		if err == nil {
 			a.log.response(msg.Content, msg.ToolCalls, tokens)
 			return msg, tokens, nil

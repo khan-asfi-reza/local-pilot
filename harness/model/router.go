@@ -25,13 +25,14 @@ func (r *Router) Constrained(ctx context.Context, msgs []Message, schema json.Ra
 	return r.client.CompleteConstrained(ctx, url, name, msgs, schema)
 }
 
-// Chat forwards a native tool-calling turn to the active model, returning the
-func (r *Router) Chat(ctx context.Context, msgs []Message, defs []ToolDef) (Message, int, error) {
+// Chat forwards a native tool-calling turn to the active model, streaming tokens
+// through onDelta (may be nil) and returning the assembled message.
+func (r *Router) Chat(ctx context.Context, msgs []Message, defs []ToolDef, onDelta func(kind, text string)) (Message, int, error) {
 	name, url, err := r.cfg.Active()
 	if err != nil {
 		return Message{}, 0, err
 	}
-	return r.client.Chat(ctx, url, name, msgs, defs)
+	return r.client.Chat(ctx, url, name, msgs, defs, onDelta)
 }
 
 // ToolMode returns the active model's tool-calling strategy.

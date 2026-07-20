@@ -47,6 +47,10 @@ type Event struct {
 
 func Text(content string) Event { return Event{Type: "text", Content: content} }
 
+// Reasoning is a chunk of the model's streamed thinking, rendered apart from the
+// answer (dimmed in the terminal, a thinking block in the web UI).
+func Reasoning(content string) Event { return Event{Type: "reasoning", Content: content} }
+
 func ToolCall(tool, info, input string) Event {
 	return Event{Type: "tool_call", Tool: tool, Info: info, Data: input}
 }

@@ -463,6 +463,8 @@ func (u *ui) emit(ev events.Event) {
 		switch ev.Type {
 		case "text":
 			fmt.Fprint(u.out, tview.Escape(ev.Content))
+		case "reasoning":
+			fmt.Fprintf(u.out, "[gray::i]%s[-:-:-]", tview.Escape(ev.Content))
 		case "tool_call":
 			u.skipNextDiff = false
 			label := u.toolLabel(ev.Tool, ev.Info)

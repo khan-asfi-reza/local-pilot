@@ -2,10 +2,9 @@ package agent
 
 import (
 	"encoding/json"
-	"os"
-	"path/filepath"
 	"strings"
 
+	root "harness"
 	"harness/harness/model"
 )
 
@@ -24,15 +23,13 @@ type Prompt struct {
 	Tools        map[string]string `json:"tools"`
 }
 
-// LoadPrompt reads prompt.json from the config directory, layering it over the
-// built-in default so a partial file still works and a missing file falls back
-// entirely. This is what lets the prompt be tuned between runs with no rebuild.
-func LoadPrompt(dir string) *Prompt {
+// LoadPrompt reads the embedded models/prompt.json, layering it over the built-in
+// default so a partial file still works. The prompt is shipped in the binary
+// (edited in the repo, not the local data dir), which holds only config and model
+// info; changing the prompt means editing models/prompt.json and rebuilding.
+func LoadPrompt() *Prompt {
 	p := defaultPrompt()
-	if dir == "" {
-		return p
-	}
-	raw, err := os.ReadFile(filepath.Join(dir, "prompt.json"))
+	raw, err := root.Defaults.ReadFile("models/prompt.json")
 	if err != nil {
 		return p
 	}

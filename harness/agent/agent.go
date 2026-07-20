@@ -45,7 +45,7 @@ func New(cfg *model.Config, skillsDir string) (*Agent, error) {
 	if contextTokens <= 0 {
 		contextTokens = 30000
 	}
-	prompt := LoadPrompt(cfg.Dir())
+	prompt := LoadPrompt()
 	reg := tools.NewRegistry(skills.names)
 	reg.SetDescriptions(prompt.Tools)
 	return &Agent{
@@ -70,7 +70,7 @@ func (a *Agent) Reload(cfgPath string) error {
 	}
 	a.cfg = cfg
 	a.router = model.NewRouter(cfg, model.NewClient())
-	a.prompt = LoadPrompt(cfg.Dir())
+	a.prompt = LoadPrompt()
 	a.reg.SetDescriptions(a.prompt.Tools)
 	return nil
 }

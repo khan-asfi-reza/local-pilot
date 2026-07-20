@@ -1,0 +1,17 @@
+Build a simple social-media web app using Django only (use Django's own templates for the frontend — no separate JavaScript framework). One Django project, in the current directory.
+
+Features:
+- Accounts: register (username + password), log in, and log out, using Django's built-in authentication.
+- Tweets: a logged-in user can post a short text "tweet". A feed page lists all tweets newest-first, each showing the author's username, the text, and the timestamp.
+- Pages: a feed/home page (login required), a register page, and a login page. Redirect anonymous users to the login page.
+
+Requirements:
+- Use SQLite (Django default).
+- requirements.txt listing django.
+- Make the UI relatively clean and pleasant: a small CSS stylesheet with a centered column, readable font, and styled form + tweet cards. Keep it tasteful, not fancy.
+
+Verify it works before finishing:
+- Create a virtualenv, install Django, and run migrations.
+- Start the dev server with the serve tool on port 8000.
+- Use curl to confirm the login page returns HTTP 200 and the feed redirects when logged out.
+- Report the real results you observed.

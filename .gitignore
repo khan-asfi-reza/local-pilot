@@ -6,6 +6,9 @@ tests/sandbox/*
 .playwright-mcp
 .DS_Store
 
+# Local planning docs (per-person one-shot prompts) — kept locally, not tracked
+plan/
+
 # Python (backend)
 venv/
 .venv/

@@ -164,7 +164,7 @@ export function ChatWindow() {
   };
 
   const last = messages[messages.length - 1];
-  const waiting = busy && !(last && last.role === 'assistant' && last.content);
+  const waiting = busy && !(last && last.role === 'assistant' && (last.content || last.reasoning));
 
   const sidebar = (
     <div className="flex h-full w-64 flex-col border-r border-zinc-800 bg-[#0e1014]">
@@ -292,7 +292,14 @@ export function ChatWindow() {
                       {isUser ? (
                         <span className="whitespace-pre-wrap">{message.content}</span>
                       ) : (
-                        <Markdown>{message.content}</Markdown>
+                        <>
+                          {message.reasoning && (
+                            <div className="mb-2 whitespace-pre-wrap border-l-2 border-zinc-800 pl-3 text-[13px] italic text-zinc-500">
+                              {message.reasoning}
+                            </div>
+                          )}
+                          <Markdown>{message.content}</Markdown>
+                        </>
                       )}
                     </div>
                   </div>

@@ -113,6 +113,60 @@ func buildRepoMap(workDir string) string {
 	return out
 }
 
+// currentTree returns a compact, live listing of the working directory's files
+// (paths only, capped), so each step can show the model the current layout
+// cheaply — including files just created — without a list_dir round-trip.
+func currentTree(workDir string) string {
+	if workDir == "" {
+		return "(no working directory)"
+	}
+	var b strings.Builder
+	n := 0
+	_ = filepath.WalkDir(workDir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			name := d.Name()
+			if path != workDir && (ignoredDirs[name] || strings.HasPrefix(name, ".")) {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if strings.HasPrefix(d.Name(), ".") {
+			return nil
+		}
+		if n >= 80 {
+			return fs.SkipAll
+		}
+		rel, e := filepath.Rel(workDir, path)
+		if e != nil {
+			return nil
+		}
+		b.WriteString(rel)
+		b.WriteByte('\n')
+		n++
+		return nil
+	})
+	if b.Len() == 0 {
+		return "(empty — no files created yet)"
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// stuckSummary is the honest final message used when the loop gives up (repeated
+// action or step limit): it states what happened and the current state, instead
+// of ending on a bare error with no context.
+func stuckSummary(workDir, lastResult string) string {
+	if len(lastResult) > 600 {
+		lastResult = lastResult[:600] + "…"
+	}
+	return "I stopped before fully finishing (I was repeating a step or hit the step limit without progress).\n\n" +
+		"Current files in the working directory:\n" + currentTree(workDir) +
+		"\n\nThe last tool result was:\n" + lastResult +
+		"\n\nTo continue, address that result directly, or re-run me with a narrower next step."
+}
+
 // symbolsFor reads a code file and returns its top-level definition lines, or
 // nil for non-code or oversized files (which appear as a path only).
 func symbolsFor(path string) []string {

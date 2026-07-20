@@ -103,6 +103,8 @@ func printHuman(ev events.Event) {
 	switch ev.Type {
 	case "text":
 		fmt.Fprint(os.Stderr, ev.Content)
+	case "reasoning":
+		fmt.Fprintf(os.Stderr, "\033[2m%s\033[0m", ev.Content)
 	case "tool_call":
 		fmt.Fprintf(os.Stderr, "\n→ %s: %s\n", ev.Tool, ev.Info)
 	case "tool_result":

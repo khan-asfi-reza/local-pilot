@@ -1,6 +1,6 @@
 {
   "context_tokens": 24000,
-  "default": "qwen3.5:4b-tools",
+  "default": "qwen3.5:4b",
   "suggested": [
     "qwen3.5:4b",
     "qwen2.5-coder:7b",
@@ -9,18 +9,15 @@
   ],
   "models": [
     {
-      "name": "qwen3.5:4b-tools",
+      "name": "qwen3.5:4b",
       "port": 11434,
-      "tool_mode": "json",
-      "base": "qwen3.5:4b",
-      "num_ctx": 262144
+      "tool_mode": "native"
     },
     {
       "name": "qwen2.5-coder:7b-tools",
       "port": 11434,
       "tool_mode": "native",
-      "base": "qwen2.5-coder:7b",
-      "num_ctx": 32768
+      "base": "qwen2.5-coder:7b"
     }
   ]
 }

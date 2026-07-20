@@ -11,9 +11,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from sqlmodel import Session, select
 
-from appdir import sandbox_for
-from database import get_engine, get_session, init_db
-from harness_client import HARNESS_URL, list_models, stream_harness_turn
+from core.appdir import sandbox_for
+from core.database import get_engine, get_session, init_db
+from services.harness_client import HARNESS_URL, list_models, stream_harness_turn
 from schemas import Message as DBMessage
 from schemas import Thread
 
