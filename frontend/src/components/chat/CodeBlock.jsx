@@ -19,7 +19,7 @@ export function CodeBlock({ language, value }) {
   };
   return (
     <div className="mb-3 overflow-hidden rounded-xl border border-zinc-800">
-      <div className="flex items-center justify-between bg-[#0b0d11] px-3 py-1.5 text-xs text-zinc-500">
+      <div className="flex items-center justify-between bg-[#08080a] px-3 py-1.5 text-xs text-zinc-500">
         <span className="font-mono">{lang}</span>
         <button
           type="button"
@@ -33,7 +33,7 @@ export function CodeBlock({ language, value }) {
       <SyntaxHighlighter
         language={lang}
         style={oneDark}
-        customStyle={{ margin: 0, background: '#0d0f13', padding: '0.9rem 1rem', fontSize: '0.85rem' }}
+        customStyle={{ margin: 0, background: '#0c0c0e', padding: '0.9rem 1rem', fontSize: '0.85rem' }}
         codeTagProps={{ style: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' } }}
       >
         {value}

@@ -1,26 +1,26 @@
 import { useNavigate } from 'react-router-dom';
-import { Code, Compass, MessageSquare, Wand2 } from 'lucide-react';
+import { Code, MessageSquare, Wand2, ArrowUpRight } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
 const CARDS = [
   {
     key: 'code',
     title: 'Code',
-    description: 'Write, edit, and run code in your project.',
+    description: 'Open a project and let the agent edit real files with you.',
     icon: Code,
     to: '/code',
   },
   {
     key: 'chat',
     title: 'Chat',
-    description: 'Ask questions and brainstorm with your local model.',
+    description: 'Think out loud with a model running on your own machine.',
     icon: MessageSquare,
     to: '/chat',
   },
   {
     key: 'builder',
     title: 'App Builder',
-    description: 'Describe an app and watch it build live.',
+    description: 'Describe an app and watch it build, live, in the preview.',
     icon: Wand2,
     to: '/builder',
   },
@@ -32,16 +32,24 @@ function Card({ title, description, icon: Icon, to, navigate }) {
       type="button"
       onClick={() => navigate(to)}
       className={cn(
-        'group flex w-64 flex-col items-center gap-4 rounded-2xl border border-zinc-800 bg-[#15181d] p-6 text-center',
-        'transition-all duration-200 hover:-translate-y-1 hover:border-zinc-600 hover:shadow-lg hover:shadow-black/30',
+        'group relative flex w-72 flex-col gap-5 overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-850 p-6 text-left',
+        'transition-all duration-200 hover:-translate-y-1 hover:border-zinc-700',
       )}
     >
-      <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-md transition-transform group-hover:scale-110">
-        <Icon size={26} strokeWidth={2} />
+      {/* gradient wash that blooms on hover */}
+      <span className="pointer-events-none absolute inset-0 bg-gradient-to-br from-emerald-500/0 to-teal-600/0 opacity-0 transition-opacity duration-300 group-hover:from-emerald-500/[0.07] group-hover:to-teal-600/[0.07] group-hover:opacity-100" />
+      <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-glow">
+        <Icon size={20} strokeWidth={2} />
       </span>
-      <div>
-        <h3 className="text-base font-semibold text-zinc-100">{title}</h3>
-        <p className="mt-1 text-sm text-zinc-500">{description}</p>
+      <div className="relative">
+        <div className="flex items-center gap-1.5">
+          <h3 className="text-[15px] font-semibold text-zinc-100">{title}</h3>
+          <ArrowUpRight
+            size={15}
+            className="text-zinc-600 opacity-0 transition-all duration-200 group-hover:translate-x-0.5 group-hover:-translate-y-0.5 group-hover:text-zinc-300 group-hover:opacity-100"
+          />
+        </div>
+        <p className="mt-1.5 text-[13px] leading-relaxed text-zinc-400">{description}</p>
       </div>
     </button>
   );
@@ -51,15 +59,18 @@ export function Home() {
   const navigate = useNavigate();
 
   return (
-    <div className="flex h-full flex-col items-center justify-center gap-10">
-      <div className="flex flex-col items-center gap-3">
-        <span className="flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-lg">
-          <Compass size={32} strokeWidth={2.2} />
-        </span>
-        <h1 className="text-3xl font-bold tracking-tight text-zinc-100">Pilot</h1>
-        <p className="text-sm text-zinc-500">Your local AI coding assistant</p>
+    <div className="hero-wash flex h-full flex-col items-center justify-center gap-12 px-6">
+      <div className="flex flex-col items-center text-center">
+        <p className="eyebrow mb-4">Local AI · runs on your machine</p>
+        <h1 className="bg-gradient-to-br from-zinc-50 to-zinc-400 bg-clip-text text-5xl font-semibold tracking-tight text-transparent">
+          Pilot
+        </h1>
+        <p className="mt-3 max-w-sm text-[15px] leading-relaxed text-zinc-400">
+          Your coding agent, chat, and app builder — all running against a model on this machine.
+        </p>
       </div>
-      <div className="flex flex-wrap items-center justify-center gap-5">
+
+      <div className="flex flex-wrap items-stretch justify-center gap-4">
         {CARDS.map((c) => (
           <Card key={c.key} {...c} navigate={navigate} />
         ))}

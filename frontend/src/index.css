@@ -1,3 +1,81 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+    --accent: #7c3aed;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background-color: #0a0a0b;
+    color: #e8e8ea;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Neutral, subtle scrollbars that read as part of the surface, not chrome. */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #26262a transparent;
+  }
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-thumb {
+    background-color: #26262a;
+    border: 3px solid transparent;
+    background-clip: content-box;
+    border-radius: 9999px;
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: #48484e;
+  }
+
+  ::selection {
+    background-color: rgba(124, 58, 237, 0.32);
+  }
+
+  /* One violet focus ring everywhere, for keyboard users. */
+  :focus-visible {
+    outline: 2px solid rgba(139, 92, 246, 0.75);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+}
+
+@layer components {
+  /* Utility eyebrow: the small mono, wide-tracked label used to title sections. */
+  .eyebrow {
+    font-family: theme('fontFamily.mono');
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: #6a6a71;
+  }
+
+  /* Ambient wash for hero areas — a faint indigo/fuchsia glow bleeding from top. */
+  .hero-wash {
+    background:
+      radial-gradient(55% 45% at 50% 0%, rgba(124, 58, 237, 0.14), transparent 70%),
+      radial-gradient(40% 35% at 75% 5%, rgba(176, 38, 201, 0.08), transparent 70%),
+      #0a0a0b;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

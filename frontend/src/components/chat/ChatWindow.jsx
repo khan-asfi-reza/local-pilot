@@ -3,6 +3,7 @@ import { ArrowUp, Check, ChevronDown, Compass, Menu, Plus, Sparkles, Square, Tra
 import { useConversations } from '../../hooks/useConversations';
 import { Button } from '../ui/button';
 import { Markdown } from './Markdown';
+import { Reasoning } from './Reasoning';
 import { Loader } from './Loader';
 import { ToolCard } from './ToolCard';
 import { cn, humanizeModel } from '../../lib/utils';
@@ -52,7 +53,7 @@ function ModelPicker({ models, currentModel, defaultModel, onSelect }) {
         <ChevronDown size={14} className={cn('transition-transform', open && 'rotate-180')} />
       </button>
       {open && (
-        <div className="absolute bottom-full left-0 z-20 mb-2 max-h-72 w-60 overflow-y-auto rounded-xl border border-zinc-800 bg-[#15181d] p-1 shadow-2xl">
+        <div className="absolute bottom-full left-0 z-20 mb-2 max-h-72 w-60 overflow-y-auto rounded-xl border border-zinc-800 bg-[#141416] p-1 shadow-2xl">
           {models.length === 0 && <div className="px-3 py-2 text-xs text-zinc-600">No models available</div>}
           {models.map((m) => (
             <button
@@ -84,7 +85,7 @@ function ConfirmDialog({ open, title, body, confirmLabel, onConfirm, onCancel })
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onCancel} />
-      <div className="relative w-full max-w-sm rounded-2xl border border-zinc-800 bg-[#15181d] p-5 shadow-2xl">
+      <div className="relative w-full max-w-sm rounded-2xl border border-zinc-800 bg-[#141416] p-5 shadow-2xl">
         <h3 className="text-base font-semibold text-zinc-100">{title}</h3>
         {body && <p className="mt-1.5 text-sm text-zinc-400">{body}</p>}
         <div className="mt-5 flex justify-end gap-2">
@@ -167,7 +168,7 @@ export function ChatWindow() {
   const waiting = busy && !(last && last.role === 'assistant' && (last.content || last.reasoning));
 
   const sidebar = (
-    <div className="flex h-full w-64 flex-col border-r border-zinc-800 bg-[#0e1014]">
+    <div className="flex h-full w-64 flex-col border-r border-zinc-800 bg-[#101012]">
       <div className="flex items-center justify-between px-4 py-4">
         <Brand />
         <button className="text-zinc-500 hover:text-zinc-200 md:hidden" onClick={() => setSidebarOpen(false)}>
@@ -293,11 +294,7 @@ export function ChatWindow() {
                         <span className="whitespace-pre-wrap">{message.content}</span>
                       ) : (
                         <>
-                          {message.reasoning && (
-                            <div className="mb-2 whitespace-pre-wrap border-l-2 border-zinc-800 pl-3 text-[13px] italic text-zinc-500">
-                              {message.reasoning}
-                            </div>
-                          )}
+                          <Reasoning>{message.reasoning}</Reasoning>
                           <Markdown>{message.content}</Markdown>
                         </>
                       )}
@@ -322,7 +319,7 @@ export function ChatWindow() {
 
         <div className="shrink-0 px-4 pb-5 pt-2">
           <form onSubmit={handleSend} className="mx-auto max-w-3xl">
-            <div className="rounded-2xl border border-zinc-800 bg-[#15181d] px-2 pb-2 pt-2 shadow-lg focus-within:border-zinc-600">
+            <div className="rounded-2xl border border-zinc-800 bg-[#141416] px-2 pb-2 pt-2 shadow-lg focus-within:border-zinc-600">
               <textarea
                 value={draft}
                 onChange={(e) => setDraft(e.target.value)}

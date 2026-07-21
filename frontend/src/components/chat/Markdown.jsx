@@ -3,13 +3,13 @@ import remarkGfm from 'remark-gfm';
 import { CodeBlock } from './CodeBlock';
 
 const components = {
-  p: (p) => <p className="mb-3 leading-7 last:mb-0" {...p} />,
+  p: (p) => <p className="mb-2 leading-relaxed last:mb-0" {...p} />,
   h1: (p) => <h1 className="mb-2 mt-4 text-xl font-semibold first:mt-0" {...p} />,
   h2: (p) => <h2 className="mb-2 mt-4 text-lg font-semibold first:mt-0" {...p} />,
   h3: (p) => <h3 className="mb-2 mt-3 text-base font-semibold first:mt-0" {...p} />,
   ul: (p) => <ul className="mb-3 list-disc space-y-1 pl-6" {...p} />,
   ol: (p) => <ol className="mb-3 list-decimal space-y-1 pl-6" {...p} />,
-  li: (p) => <li className="leading-7" {...p} />,
+  li: (p) => <li className="leading-relaxed" {...p} />,
   strong: (p) => <strong className="font-semibold text-white" {...p} />,
   a: (p) => <a className="text-sky-400 underline underline-offset-2 hover:text-sky-300" target="_blank" rel="noreferrer" {...p} />,
   blockquote: (p) => <blockquote className="mb-3 border-l-2 border-zinc-700 pl-3 text-zinc-400" {...p} />,
@@ -48,7 +48,7 @@ function balanceBold(md) {
 
 export function Markdown({ children }) {
   return (
-    <div className="text-[0.95rem] text-zinc-100">
+    <div className="text-[0.875rem] text-zinc-100">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {balanceBold(children || '')}
       </ReactMarkdown>

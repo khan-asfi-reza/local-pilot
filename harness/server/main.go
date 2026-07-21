@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -34,6 +35,7 @@ type runRequest struct {
 	AllowedTools     []string        `json:"allowed_tools"`
 	WorkingDirectory string          `json:"working_directory"`
 	Model            string          `json:"model"`
+	FullAccess       bool            `json:"full_access"`
 }
 
 func main() {
@@ -122,7 +124,28 @@ func main() {
 		}
 		w.Header().Set("Content-Type", "application/x-ndjson")
 
-		allowed := intersect(req.AllowedTools, safeTools)
+		// full_access widens the harness to the full tool set (file, shell, and
+		// code-intelligence tools) with no sandbox, working directly in the given
+		// directory — a privilege escalation. The trust decision is made by the
+		// server from the connection, never from the request body alone: honor it
+		// only for callers on this machine (loopback) that are not a browser
+		// cross-site request. This shuts out LAN clients (the server also listens
+		// on the LAN for the safe chat path) and CSRF / DNS-rebinding that would
+		// otherwise reach a loopback listener. An empty Allowed set means "every
+		// tool" (see Registry.Defs); the default path is unchanged (safe tools +
+		// sandbox).
+		if req.FullAccess && (!isLoopback(r) || browserCrossSite(r)) {
+			http.Error(w, "full_access is restricted to local IDE clients", http.StatusForbidden)
+			return
+		}
+		var allowed []string
+		sandbox := true
+		if req.FullAccess {
+			allowed = nil
+			sandbox = false
+		} else {
+			allowed = intersect(req.AllowedTools, safeTools)
+		}
 		enc := json.NewEncoder(w)
 		emit := func(ev events.Event) {
 			_ = enc.Encode(ev)
@@ -133,7 +156,7 @@ func main() {
 			Allowed:  allowed,
 			Mode:     "auto",
 			WorkDir:  req.WorkingDirectory,
-			Sandbox:  true, // the web path runs code_run in an isolated sandbox
+			Sandbox:  sandbox,
 		}
 		// Switch to the request's model (falling back to the default) and run.
 		// Serialized so per-request model switching does not race.
@@ -151,6 +174,33 @@ func main() {
 		fmt.Fprintf(os.Stderr, "harness-server: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// isLoopback reports whether the request originates from this machine. Only
+// loopback callers may request full_access, so a host elsewhere on the LAN
+// cannot escalate past the safe tool set.
+func isLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// browserCrossSite reports whether the request carries a browser cross-site
+// marker. The trusted local IDE backend calls with a plain HTTP client and sets
+// neither header; a browser making a cross-origin fetch sets Origin (and modern
+// browsers Sec-Fetch-Site). Rejecting these on the escalation path defeats CSRF
+// and DNS-rebinding that reach a loopback listener from the victim's browser.
+func browserCrossSite(r *http.Request) bool {
+	if s := r.Header.Get("Sec-Fetch-Site"); s != "" && s != "same-origin" && s != "none" {
+		return true
+	}
+	if r.Header.Get("Origin") != "" {
+		return true
+	}
+	return false
 }
 
 // intersect returns the requested tools limited to the safe set. An empty
