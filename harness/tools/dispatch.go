@@ -39,6 +39,7 @@ func NewRegistry(skillNames []string) *Registry {
 	add(shellRunTool())
 	add(serveTool())
 	add(codeRunTool())
+	add(npmInstallTool())
 	add(webSearchTool())
 	if len(skillNames) > 0 {
 		add(loadSkillTool(skillNames))

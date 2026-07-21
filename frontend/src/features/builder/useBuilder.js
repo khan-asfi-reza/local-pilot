@@ -1,58 +1,88 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from './api';
 
 let seq = 0;
 const uid = (p) => `${p}${Date.now()}_${seq++}`;
 
-// useBuilder holds builder session state and the streaming reducer, mirroring
-// the pattern from useConversations.js.
+// useBuilder manages the project list and the currently open project: its build
+// log (streamed), live preview URL, and source files.
 export function useBuilder() {
-  const [sessionId, setSessionId] = useState(null);
-  const [messages, setMessages] = useState([]); // streaming log entries
+  const [projects, setProjects] = useState([]);
+  const [activeId, setActiveId] = useState(null);
+  const [activeName, setActiveName] = useState('');
+  const [previewUrl, setPreviewUrl] = useState(null);
+  const [files, setFiles] = useState([]);
+  const [messages, setMessages] = useState([]);
   const [busy, setBusy] = useState(false);
-  const [done, setDone] = useState(false);
   const [error, setError] = useState(null);
-  const [writtenFiles, setWrittenFiles] = useState([]);
-  const [previewVersion, setPreviewVersion] = useState(0);
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState(null);
   const [currentModel, setCurrentModel] = useState(null);
-  const [tokens, setTokens] = useState(0);
+  // Runtime console errors forwarded from the preview iframe (postMessage bridge).
+  const [consoleErrors, setConsoleErrors] = useState([]);
   const abortRef = useRef(null);
 
+  useEffect(() => {
+    const onMsg = (e) => {
+      const d = e.data;
+      if (!d || d.source !== 'builder-preview') return;
+      setConsoleErrors((prev) => [...prev.slice(-49), { id: uid('e'), level: d.level, text: d.text }]);
+    };
+    window.addEventListener('message', onMsg);
+    return () => window.removeEventListener('message', onMsg);
+  }, []);
+  const clearConsole = useCallback(() => setConsoleErrors([]), []);
+
+  const loadProjects = useCallback(async () => {
+    try {
+      const { projects: list } = await api.listProjects();
+      setProjects(list || []);
+    } catch {
+      /* backend down */
+    }
+  }, []);
+
+  useEffect(() => {
+    loadProjects();
+    (async () => {
+      try {
+        const base =
+          import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8182`;
+        const res = await fetch(`${base}/models`);
+        if (res.ok) {
+          const d = await res.json();
+          setModels(d.models || []);
+          setDefaultModel(d.default || null);
+          setCurrentModel(d.default || null);
+        }
+      } catch {
+        /* ignore */
+      }
+    })();
+  }, [loadProjects]);
+
+  // --- streaming reducer ---------------------------------------------------
   const appendText = useCallback((text) => {
     setMessages((prev) => {
       const msgs = [...prev];
       const last = msgs[msgs.length - 1];
-      if (last && last.role === 'assistant') {
-        msgs[msgs.length - 1] = { ...last, content: last.content + text };
-      } else {
-        msgs.push({ id: uid('a'), role: 'assistant', content: text });
-      }
+      if (last && last.role === 'assistant') msgs[msgs.length - 1] = { ...last, content: last.content + text };
+      else msgs.push({ id: uid('a'), role: 'assistant', content: text, reasoning: '' });
       return msgs;
     });
   }, []);
-
   const appendReasoning = useCallback((text) => {
     setMessages((prev) => {
       const msgs = [...prev];
       const last = msgs[msgs.length - 1];
-      if (last && last.role === 'assistant') {
-        msgs[msgs.length - 1] = { ...last, reasoning: (last.reasoning || '') + text };
-      } else {
-        msgs.push({ id: uid('a'), role: 'assistant', content: '', reasoning: text });
-      }
+      if (last && last.role === 'assistant') msgs[msgs.length - 1] = { ...last, reasoning: (last.reasoning || '') + text };
+      else msgs.push({ id: uid('a'), role: 'assistant', content: '', reasoning: text });
       return msgs;
     });
   }, []);
-
   const startTool = useCallback((ev) => {
-    setMessages((prev) => {
-      const step = { id: uid('t'), role: 'tool', tool: ev.tool, info: ev.info, input: ev.data, output: null, running: true };
-      return [...prev, step];
-    });
+    setMessages((prev) => [...prev, { id: uid('t'), role: 'tool', tool: ev.tool, info: ev.info, input: ev.data, output: null, running: true }]);
   }, []);
-
   const finishTool = useCallback((ev) => {
     setMessages((prev) => {
       const msgs = [...prev];
@@ -65,83 +95,126 @@ export function useBuilder() {
       return msgs;
     });
   }, []);
-
-  const handleEvent = useCallback((ev) => {
-    if (ev.type === 'text') appendText(ev.content || '');
-    else if (ev.type === 'reasoning') appendReasoning(ev.content || '');
-    else if (ev.type === 'tool_call') startTool(ev);
-    else if (ev.type === 'tool_result') finishTool(ev);
-    else if (ev.type === 'error') appendText(`\n\n[error] ${ev.message || ''}`);
-    else if (ev.type === 'done') setDone(true);
-    else if (ev.type === 'usage') setTokens(ev.tokens || 0);
-    else if (ev.type === 'files') {
-      setWrittenFiles(ev.files || []);
-      setPreviewVersion((v) => v + 1);
-    }
-  }, [appendText, appendReasoning, startTool, finishTool]);
-
-  // create starts a new builder session and streams the initial build.
-  const create = useCallback(
-    async (prompt) => {
-      setMessages([]);
-      setDone(false);
-      setError(null);
-      setWrittenFiles([]);
-      setBusy(true);
-      const model = currentModel || defaultModel;
-      try {
-        const { id } = await api.createSession(prompt, model);
-        setSessionId(id);
-        const controller = new AbortController();
-        abortRef.current = controller;
-        await api.generate(id, prompt, handleEvent, controller.signal);
-        abortRef.current = null;
-      } catch (e) {
-        const msg = String(e);
-        if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('TypeError')) {
-          setError('Cannot reach the backend. Make sure the server is running on port 8182.');
-        } else {
-          setError(msg);
-        }
-      }
-      setBusy(false);
+  const pushError = useCallback((text) => {
+    setMessages((prev) => [...prev, { id: uid('e'), role: 'error', content: String(text) }]);
+  }, []);
+  const handleEvent = useCallback(
+    (ev) => {
+      if (ev.type === 'text') appendText(ev.content || '');
+      else if (ev.type === 'reasoning') appendReasoning(ev.content || '');
+      else if (ev.type === 'tool_call') startTool(ev);
+      else if (ev.type === 'tool_result') finishTool(ev);
+      else if (ev.type === 'files') setFiles(ev.files || []);
+      else if (ev.type === 'error') pushError(ev.message || 'Something went wrong');
     },
-    [currentModel, defaultModel, handleEvent],
+    [appendText, appendReasoning, startTool, finishTool, pushError],
   );
 
-  // generate sends a follow-up prompt to an existing session with prior context.
-  const generate = useCallback(
+  // --- project navigation --------------------------------------------------
+  const rename = useCallback(
+    async (name) => {
+      const n = (name || '').trim();
+      if (!n || !activeId) return;
+      setActiveName(n);
+      try {
+        await api.renameProject(activeId, n);
+        loadProjects();
+      } catch {
+        /* ignore */
+      }
+    },
+    [activeId, loadProjects],
+  );
+
+  const openProject = useCallback(async (id) => {
+    setActiveId(id);
+    setMessages([]);
+    setConsoleErrors([]);
+    setError(null);
+    try {
+      const p = await api.getProject(id);
+      setActiveName(p.name);
+      setPreviewUrl(p.url);
+      setFiles(p.files || []);
+      // Restore the persisted build log so past messages show after reload.
+      setMessages((p.messages || []).map((m) => ({ id: uid(m.role[0] || 'm'), role: m.role, content: m.content || '' })));
+    } catch (e) {
+      setError(String(e));
+    }
+  }, []);
+
+  // createBlank makes an empty project and returns its id; the caller navigates
+  // to /builder/<id> and the URL drives openProject.
+  const createBlank = useCallback(async () => {
+    const { id } = await api.createProject('', '');
+    await loadProjects();
+    return id;
+  }, [loadProjects]);
+
+  const closeProject = useCallback(() => {
+    if (abortRef.current) abortRef.current.abort();
+    abortRef.current = null;
+    setActiveId(null);
+    setActiveName('');
+    setPreviewUrl(null);
+    setFiles([]);
+    setMessages([]);
+    setBusy(false);
+    loadProjects();
+  }, [loadProjects]);
+
+  const removeProject = useCallback(
+    async (id) => {
+      await api.deleteProject(id);
+      await loadProjects();
+    },
+    [loadProjects],
+  );
+
+  // --- build + edit --------------------------------------------------------
+  const send = useCallback(
     async (prompt) => {
-      if (!sessionId) return;
-      setDone(false);
+      if (!activeId) return;
+      // Name the app from the first prompt if it is still the default.
+      if (!activeName || activeName === 'Untitled app') {
+        const nm = prompt.trim().replace(/\s+/g, ' ').slice(0, 40) || 'Untitled app';
+        setActiveName(nm);
+        api.renameProject(activeId, nm).then(loadProjects).catch(() => {});
+      }
+      setMessages((prev) => [...prev, { id: uid('u'), role: 'user', content: prompt }]);
+      setConsoleErrors([]);
       setBusy(true);
-      // Build compact history: user prompts + assistant content only (no tool noise).
+      setError(null);
+      const controller = new AbortController();
+      abortRef.current = controller;
       const history = messages
         .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
         .map((m) => ({ role: m.role, content: m.content }));
-      const controller = new AbortController();
-      abortRef.current = controller;
       try {
-        await api.generate(sessionId, prompt, handleEvent, controller.signal, history);
+        await api.generate(
+          activeId,
+          prompt,
+          (ev) => {
+            handleEvent(ev);
+            if (ev.type === 'done') {
+              setBusy(false);
+              abortRef.current = null;
+            }
+          },
+          controller.signal,
+          history,
+          currentModel || defaultModel,
+        );
       } catch (e) {
-        const msg = String(e);
-        if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('TypeError')) {
-          setError('Cannot reach the backend. Make sure the server is running on port 8182.');
-        } else {
-          setError(msg);
-        }
+        if (e?.name !== 'AbortError') setError(String(e));
       }
-      abortRef.current = null;
       setBusy(false);
+      abortRef.current = null;
+      // Refresh the file list after a build.
+      api.getProject(activeId).then((p) => setFiles(p.files || [])).catch(() => {});
     },
-    [sessionId, messages, handleEvent],
+    [activeId, activeName, loadProjects, messages, handleEvent, currentModel, defaultModel],
   );
-
-  // preview returns the iframe URL, cache-busted after each file write.
-  const preview = useCallback(() => {
-    if (!sessionId) return null;
-    return `${api.previewUrl(sessionId)}?v=${previewVersion}`;
-  }, [sessionId, previewVersion]);
 
   const stop = useCallback(() => {
     if (!abortRef.current) return;
@@ -150,97 +223,25 @@ export function useBuilder() {
     setBusy(false);
   }, []);
 
-  const reset = useCallback(() => {
-    if (abortRef.current) {
-      abortRef.current.abort();
-      abortRef.current = null;
-    }
-    setSessionId(null);
-    setMessages([]);
-    setBusy(false);
-    setDone(false);
-    setError(null);
-    setWrittenFiles([]);
-    setTokens(0);
-    setPreviewVersion((v) => v + 1);
-  }, []);
+  const readSource = useCallback(async (path) => (await api.readFile(activeId, path)).content, [activeId]);
+  const saveSource = useCallback(async (path, content) => { await api.writeFile(activeId, path, content); }, [activeId]);
 
-  // exportToFolder uses the File System Access API, or falls back to a download.
-  const exportToFolder = useCallback(async () => {
-    if (!sessionId) return;
-    let files;
+  const run = useCallback(async () => {
+    if (!activeId) return;
+    setConsoleErrors([]);
     try {
-      const data = await api.getFiles(sessionId);
-      files = data.files || [];
+      const { url } = await api.runProject(activeId);
+      // Force the iframe to reload by re-setting the URL with a cache-key.
+      setPreviewUrl(`${url}?t=${Date.now()}`);
     } catch (e) {
-      throw new Error(`Failed to fetch files: ${e.message || e}`);
+      setError(String(e));
     }
-    if (!files.length) return;
-
-    if (window.showDirectoryPicker) {
-      try {
-        const dirHandle = await window.showDirectoryPicker();
-        for (const f of files) {
-          const fileHandle = await dirHandle.getFileHandle(f.path, { create: true });
-          const writable = await fileHandle.createWritable();
-          await writable.write(f.content);
-          await writable.close();
-        }
-      } catch (e) {
-        if (e?.name !== 'AbortError') {
-          throw new Error(`Export failed: ${e.message || e}`);
-        }
-      }
-    } else {
-      // Fallback: bundle everything into a single self-contained HTML file.
-      const htmlFile = files.find((f) => f.path.endsWith('.html'));
-      if (!htmlFile) return;
-      let html = htmlFile.content;
-      for (const f of files) {
-        if (f.path.endsWith('.css')) {
-          html = html.replace(
-            new RegExp(`<link[^>]*href=["']${f.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*>`, 'i'),
-            `<style>\n${f.content}\n</style>`,
-          );
-        }
-      }
-      for (const f of files) {
-        if (f.path.endsWith('.js')) {
-          html = html.replace(
-            new RegExp(`<script[^>]*src=["']${f.path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["'][^>]*>\\s*</script>`, 'i'),
-            `<script>\n${f.content}\n</script>`,
-          );
-        }
-      }
-      const blob = new Blob([html], { type: 'text/html' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'index.html';
-      a.click();
-      URL.revokeObjectURL(url);
-    }
-  }, [sessionId]);
+  }, [activeId]);
 
   return {
-    sessionId,
-    messages,
-    busy,
-    done,
-    error,
-    writtenFiles,
-    tokens,
-    models,
-    defaultModel,
-    currentModel,
-    setCurrentModel,
-    setModels,
-    setDefaultModel,
-    create,
-    generate,
-    preview,
-    stop,
-    reset,
-    exportToFolder,
+    projects, activeId, activeName, previewUrl, files, messages, busy, error,
+    models, defaultModel, currentModel, setCurrentModel, consoleErrors, clearConsole,
+    loadProjects, openProject, createBlank, closeProject, removeProject, rename,
+    send, stop, readSource, saveSource, run, exportUrl: api.exportUrl,
   };
 }

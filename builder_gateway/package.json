@@ -1,0 +1,6 @@
+{
+  "name": "local-pilot-builder-gateway",
+  "private": true,
+  "type": "module",
+  "dependencies": { "http-proxy": "^1.18.1" }
+}

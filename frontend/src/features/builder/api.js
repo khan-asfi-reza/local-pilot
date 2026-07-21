@@ -1,3 +1,5 @@
+// App Builder API client (Replit-style multi-project). Each project is an
+// isolated Vite app previewed through the gateway on :6969/<id>/.
 const BASE =
   import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8182`;
 
@@ -6,25 +8,68 @@ async function json(res) {
   return res.json();
 }
 
-// createSession creates a new builder session with an initial prompt.
-export async function createSession(prompt, model) {
-  const res = await fetch(`${BASE}/builder/sessions`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, model }),
-  });
-  return (await json(res)); // { id }
+export async function listProjects() {
+  return json(await fetch(`${BASE}/builder/projects`)); // { projects: [{id,name,prompt,created}] }
 }
 
-// generate streams a build for the given session, calling onEvent for each
-// parsed SSE frame. history is the prior message list for context on follow-ups.
-export async function generate(id, prompt, onEvent, signal, history) {
-  let res;
-  try {
-    res = await fetch(`${BASE}/builder/sessions/${id}/generate`, {
+export async function createProject(name, prompt) {
+  const res = await fetch(`${BASE}/builder/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, prompt }),
+  });
+  return json(res); // { id, name }
+}
+
+export async function getProject(id) {
+  return json(await fetch(`${BASE}/builder/projects/${id}`)); // { id,name,url,running,files }
+}
+
+export async function runProject(id) {
+  return json(await fetch(`${BASE}/builder/projects/${id}/run`, { method: 'POST' })); // { url, running }
+}
+
+export async function renameProject(id, name) {
+  return json(
+    await fetch(`${BASE}/builder/projects/${id}/rename`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, history: history || [] }),
+      body: JSON.stringify({ name }),
+    }),
+  ); // { id, name }
+}
+
+export async function deleteProject(id) {
+  await fetch(`${BASE}/builder/projects/${id}`, { method: 'DELETE' });
+}
+
+export async function readFile(id, path) {
+  return json(await fetch(`${BASE}/builder/projects/${id}/file?path=${encodeURIComponent(path)}`));
+}
+
+export async function writeFile(id, path, content) {
+  return json(
+    await fetch(`${BASE}/builder/projects/${id}/file`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path, content }),
+    }),
+  );
+}
+
+// exportUrl is a direct link that downloads the project as a zip.
+export function exportUrl(id) {
+  return `${BASE}/builder/projects/${id}/export`;
+}
+
+// generate streams the build for a project, calling onEvent per parsed SSE frame.
+export async function generate(id, prompt, onEvent, signal, history, model) {
+  let res;
+  try {
+    res = await fetch(`${BASE}/builder/projects/${id}/generate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, history: history || [], model }),
       signal,
     });
   } catch (e) {
@@ -60,14 +105,4 @@ export async function generate(id, prompt, onEvent, signal, history) {
   } catch (e) {
     if (e?.name !== 'AbortError') onEvent({ type: 'error', message: String(e) });
   }
-}
-
-// previewUrl returns the URL for the live preview iframe.
-export function previewUrl(id) {
-  return `${BASE}/builder/sessions/${id}/preview`;
-}
-
-// getFiles returns the generated files for a session.
-export async function getFiles(id) {
-  return json(await fetch(`${BASE}/builder/sessions/${id}/files`));
 }

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -15,6 +16,55 @@ import (
 )
 
 const maxOutputBytes = 20_000
+
+// npmPkgRe validates an npm package spec (optional scope, optional @version), so
+// the narrow npm_install tool can never smuggle shell arguments.
+var npmPkgRe = regexp.MustCompile(`^@?[a-z0-9][a-z0-9._-]*(/[a-z0-9][a-z0-9._-]*)?(@[a-zA-Z0-9._~^><=.\-+*x]+)?$`)
+
+// npmInstallTool installs a single npm package into the working directory. It is
+// a narrow alternative to a full shell: the package name is validated and the
+// command runs via argv (no shell), so it cannot execute arbitrary commands.
+func npmInstallTool() *Tool {
+	return &Tool{
+		Name:        "npm_install",
+		Description: "Install ONE npm package into the current project. Give just the package name, optionally with a version (e.g. \"recharts\" or \"zod@3\"). Runs `npm install <name>`. Use only when the app needs a library that is not already available.",
+		Params:      json.RawMessage(`{"type":"object","properties":{"package":{"type":"string","description":"npm package name, optionally name@version. Exactly one package."}},"required":["package"]}`),
+		Mutating:    true,
+		Preview: func(env Env, args Args) (string, *events.Diff, error) {
+			return "npm install " + args.Str("package"), nil, nil
+		},
+		Run: func(env Env, args Args) (any, *events.Diff, error) {
+			pkg := strings.TrimSpace(args.Str("package"))
+			if pkg == "" {
+				return nil, nil, fmt.Errorf("package is required")
+			}
+			if !npmPkgRe.MatchString(pkg) {
+				return nil, nil, fmt.Errorf("invalid package name %q", pkg)
+			}
+			ctx, cancel := context.WithTimeout(env.Ctx, 180*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, "npm", "install", pkg) // argv, no shell
+			cmd.Dir = env.WorkDir
+			cmd.Env = projectEnv()
+			var out, errb bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &out, &errb
+			err := cmd.Run()
+			code := 0
+			if ee, ok := err.(*exec.ExitError); ok {
+				code = ee.ExitCode()
+			} else if err != nil {
+				code = -1
+			}
+			clip := func(s string) string {
+				if len(s) > maxOutputBytes {
+					return s[:maxOutputBytes] + "\n… [truncated]"
+				}
+				return s
+			}
+			return runResult{ExitCode: code, Stdout: clip(out.String()), Stderr: clip(errb.String()), Command: "npm install " + pkg}, nil, nil
+		},
+	}
+}
 
 // runResult is the structured shape every executing tool returns, so a small
 // model reasons over a clean, separated failure instead of one blob.
