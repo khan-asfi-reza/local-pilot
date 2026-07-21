@@ -134,17 +134,41 @@ export const code = {
     });
     return json(res); // { ok: true }
   },
-  // streamCodeAgent POSTs { root, model, messages } and streams the server-sent
-  // events back, calling onEvent for each parsed event
-  // ({type:'text'|'reasoning'|'tool_call'|'tool_result'|'usage'|'done'|'error', ...}).
-  // Pass an AbortSignal to stop the stream. Parsing matches sendMessage above.
-  async streamCodeAgent(root, model, messages, onEvent, signal) {
+  // confirmAgent answers an ask-mode confirmation for a paused run. decision is
+  // 'approve' | 'decline' | 'approve_always'; feedback is an optional note handed
+  // back to the model when redirecting instead of a plain reject.
+  async confirmAgent(id, decision, feedback = '') {
+    const res = await fetch(`${BASE}/code/agent/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id, decision, feedback }),
+    });
+    return json(res); // { ok: true }
+  },
+  // listSessions / loadSession back the resume-on-reload behaviour; sessions live
+  // in <root>/.pilot/sessions and are shared with the terminal.
+  async listSessions(root) {
+    return json(await fetch(`${BASE}/code/sessions?root=${encodeURIComponent(root)}`)); // { sessions }
+  },
+  async loadSession(root, id) {
+    return json(
+      await fetch(`${BASE}/code/session?root=${encodeURIComponent(root)}&id=${encodeURIComponent(id)}`),
+    ); // { id, messages, ... }
+  },
+  // streamCodeAgent POSTs { root, model, messages, mode } and streams the
+  // server-sent events back, calling onEvent for each parsed event
+  // ({type:'text'|'reasoning'|'tool_call'|'tool_result'|'confirm'|'usage'|'done'|'error', ...}).
+  // mode 'ask' pauses on mutating ops (a 'confirm' event) until confirmAgent is
+  // called; default 'auto' never pauses. Pass an AbortSignal to stop the stream.
+  // sessionId resumes/continues a stored session; the backend also emits a
+  // {type:'session', id} event so the caller can persist a new one.
+  async streamCodeAgent(root, model, messages, onEvent, signal, mode, sessionId) {
     let res;
     try {
       res = await fetch(`${BASE}/code/agent`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ root, model, messages }),
+        body: JSON.stringify({ root, model, messages, mode, session_id: sessionId }),
         signal,
       });
     } catch (e) {

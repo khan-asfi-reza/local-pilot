@@ -14,12 +14,14 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"harness/harness/agent"
 	"harness/harness/appdir"
 	"harness/harness/events"
 	"harness/harness/model"
+	"harness/harness/tools"
 )
 
 // safeTools is the only set the web path may use: a sandboxed runner and web
@@ -36,7 +38,25 @@ type runRequest struct {
 	WorkingDirectory string          `json:"working_directory"`
 	Model            string          `json:"model"`
 	FullAccess       bool            `json:"full_access"`
+	Mode             string          `json:"mode"`          // "ask" pauses on mutating ops; default "auto"
+	InjectSkills     []string        `json:"inject_skills"` // skills to inject silently regardless of detection (e.g. App Builder forces "app-builder")
 }
+
+// confirmReply is a client's answer to an ask-mode confirmation.
+type confirmReply struct {
+	decision tools.Decision
+	feedback string
+}
+
+// Pending ask-mode confirmations. A run in ask mode emits a "confirm" event with
+// an id and blocks on the channel registered here; the /confirm endpoint (a
+// separate connection) delivers the client's decision by id. HTTP streaming is
+// one-way, so the round trip uses a second request rather than the run's stream.
+var (
+	confirmMu   sync.Mutex
+	confirmWait = map[string]chan confirmReply{}
+	confirmSeq  uint64
+)
 
 func main() {
 	port := flag.Int("port", 9000, "port to listen on")
@@ -57,7 +77,9 @@ func main() {
 		fmt.Fprintf(os.Stderr, "harness-server: %v\n", err)
 		os.Exit(1)
 	}
-	ag, err := agent.New(cfg, "")
+	// Scan the seeded skills dir so the web path (App Builder, Code IDE) can use
+	// load_skill. The terminal seeds this on startup via appdir.Ensure().
+	ag, err := agent.New(cfg, filepath.Join(appdir.Dir(), "skills"))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "harness-server: %v\n", err)
 		os.Exit(1)
@@ -141,7 +163,11 @@ func main() {
 		var allowed []string
 		sandbox := true
 		if req.FullAccess {
-			allowed = nil
+			// Full access: no sandbox, work in the real directory. Honor an explicit
+			// tool allowlist when given — the App Builder restricts itself to file
+			// tools so it never starts servers or runs shells — while an empty list
+			// means the full tool set (the Code IDE).
+			allowed = req.AllowedTools
 			sandbox = false
 		} else {
 			allowed = intersect(req.AllowedTools, safeTools)
@@ -151,21 +177,90 @@ func main() {
 			_ = enc.Encode(ev)
 			flusher.Flush()
 		}
+		// Ask mode pauses on mutating actions for approval. Only the full_access
+		// (Code IDE) path may request it; the safe chat path stays auto. When off,
+		// confirm is nil and the run never pauses.
+		mode := "auto"
+		var confirm tools.ConfirmFunc
+		if req.FullAccess && req.Mode == tools.ModeAsk {
+			mode = tools.ModeAsk
+			confirm = func(tool, summary string, diff *events.Diff) (tools.Decision, string) {
+				id := fmt.Sprintf("c%d", atomic.AddUint64(&confirmSeq, 1))
+				ch := make(chan confirmReply, 1)
+				confirmMu.Lock()
+				confirmWait[id] = ch
+				confirmMu.Unlock()
+				defer func() {
+					confirmMu.Lock()
+					delete(confirmWait, id)
+					confirmMu.Unlock()
+				}()
+				// Ask the client and block until it answers on /confirm or the
+				// connection drops (treated as decline so the action is skipped).
+				emit(events.Confirm(id, tool, summary, diff))
+				select {
+				case <-r.Context().Done():
+					return tools.Decline, ""
+				case reply := <-ch:
+					return reply.decision, reply.feedback
+				}
+			}
+		}
 		agentReq := agent.Request{
-			Messages: req.Messages,
-			Allowed:  allowed,
-			Mode:     "auto",
-			WorkDir:  req.WorkingDirectory,
-			Sandbox:  sandbox,
+			Messages:     req.Messages,
+			Allowed:      allowed,
+			Mode:         mode,
+			WorkDir:      req.WorkingDirectory,
+			Sandbox:      sandbox,
+			InjectSkills: req.InjectSkills,
 		}
 		// Switch to the request's model (falling back to the default) and run.
-		// Serialized so per-request model switching does not race.
+		// Serialized so per-request model switching does not race. The request
+		// context cancels the turn when the client disconnects (pause).
 		runMu.Lock()
 		defer runMu.Unlock()
 		ag.UseSessionModel(req.Model)
-		// The web path never pauses for confirmation, so confirm is nil. The
-		// request context cancels the turn when the client disconnects (pause).
-		ag.Run(r.Context(), agentReq, emit, nil)
+		ag.Run(r.Context(), agentReq, emit, confirm)
+	})
+
+	// POST /confirm delivers an ask-mode decision to a blocked run, matched by the
+	// id from its "confirm" event. Restricted to local IDE clients, like the
+	// escalation path it answers for.
+	mux.HandleFunc("/confirm", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		if !isLoopback(r) || browserCrossSite(r) {
+			http.Error(w, "restricted to local IDE clients", http.StatusForbidden)
+			return
+		}
+		var body struct {
+			ID       string `json:"id"`
+			Decision string `json:"decision"`
+			Feedback string `json:"feedback"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		confirmMu.Lock()
+		ch := confirmWait[body.ID]
+		confirmMu.Unlock()
+		if ch == nil {
+			http.Error(w, "no pending confirmation for that id", http.StatusNotFound)
+			return
+		}
+		decision := tools.Decline
+		switch body.Decision {
+		case "approve":
+			decision = tools.Approve
+		case "approve_always":
+			decision = tools.ApproveAlways
+		}
+		ch <- confirmReply{decision: decision, feedback: body.Feedback}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": true})
 	})
 
 	addr := fmt.Sprintf(":%d", *port)

@@ -7,10 +7,9 @@ from typing import Any, AsyncIterator
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from sqlmodel import select
 
-from core.database import get_session, init_db
-from schemas.project import Project
+from core.database import init_db
+from core import projects, sessions
 from services.harness_client import HARNESS_URL
 
 router = APIRouter(prefix="/code", dependencies=[])
@@ -62,36 +61,19 @@ def browse(path: str = "") -> dict[str, Any]:
 
 
 @router.get("/projects")
-def list_projects(session=Depends(get_session)) -> dict[str, Any]:
-    projects = session.exec(select(Project).order_by(Project.created_at.desc())).all()
-    return {
-        "projects": [
-            {
-                "id": p.id,
-                "path": p.path,
-                "name": p.name,
-                "created_at": p.created_at.isoformat(),
-            }
-            for p in projects
-        ]
-    }
+def list_projects() -> dict[str, Any]:
+    # Unified registry (shared with the terminal + Telegram).
+    return {"projects": projects.list_projects()}
 
 
 @router.post("/projects", status_code=200)
-async def create_project(request: Request, session=Depends(get_session)) -> dict[str, Any]:
+async def create_project(request: Request) -> dict[str, Any]:
     body = await request.json()
     path = body.get("path", "")
     resolved = os.path.realpath(path)
     if not os.path.isdir(resolved):
         raise HTTPException(status_code=400, detail="directory does not exist")
-    existing = session.exec(select(Project).where(Project.path == resolved)).first()
-    if existing:
-        return {"project": {"id": existing.id, "path": existing.path, "name": existing.name, "created_at": existing.created_at.isoformat()}}
-    project = Project(id=str(uuid.uuid4()), path=resolved, name=os.path.basename(resolved))
-    session.add(project)
-    session.commit()
-    session.refresh(project)
-    return {"project": {"id": project.id, "path": project.path, "name": project.name, "created_at": project.created_at.isoformat()}}
+    return {"project": projects.upsert(resolved, source="web")}
 
 
 def _build_tree(root: str, relative: str = "") -> list[dict[str, Any]]:
@@ -154,19 +136,28 @@ async def code_agent(request: Request) -> StreamingResponse:
     root = body["root"]
     model = body.get("model")
     messages = body.get("messages", [])
+    mode = body.get("mode") or "ask"  # "ask" pauses on mutating ops; default auto
+    sid = body.get("session_id") or sessions.new_id()
+    if not sessions.is_valid_id(sid):
+        raise HTTPException(status_code=400, detail="invalid session id")
     resolved_root = os.path.realpath(root)
     if not os.path.isdir(resolved_root):
         raise HTTPException(status_code=400, detail="not a directory")
 
     async def event_stream() -> AsyncIterator[str]:
-        payload = {
-            "messages": messages,
-            "working_directory": resolved_root,
-            "full_access": True,
-        }
-        if model:
-            payload["model"] = model
+        # Tell the client the session id first, so it persists it for follow-ups.
+        yield f"event: session\ndata: {json.dumps({'type': 'session', 'id': sid})}\n\n"
+        assistant_parts: list[str] = []
         try:
+            payload = {
+                "messages": messages,
+                "working_directory": resolved_root,
+                "full_access": True,
+            }
+            if model:
+                payload["model"] = model
+            if mode:
+                payload["mode"] = mode
             async with httpx.AsyncClient(timeout=None) as client:
                 async with client.stream("POST", HARNESS_URL, json=payload) as resp:
                     resp.raise_for_status()
@@ -175,6 +166,8 @@ async def code_agent(request: Request) -> StreamingResponse:
                             continue
                         event = json.loads(line)
                         etype = event.get("type", "text")
+                        if etype == "text":
+                            assistant_parts.append(event.get("content", ""))
                         yield f"event: {etype}\ndata: {json.dumps(event)}\n\n"
                         if etype in {"done", "error"}:
                             break
@@ -182,5 +175,49 @@ async def code_agent(request: Request) -> StreamingResponse:
             return
         except Exception as exc:
             yield f"event: error\ndata: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
+        finally:
+            # Persist the conversation to <root>/.pilot/sessions/<id>.json (same
+            # store the terminal uses), so it survives reload and either tool can
+            # resume it.
+            convo = list(messages)
+            answer = "".join(assistant_parts).strip()
+            if answer:
+                convo.append({"role": "assistant", "content": answer})
+            if convo:
+                try:
+                    sessions.save(resolved_root, sid, convo, model=model, mode=mode)
+                except Exception:
+                    pass
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/sessions")
+def code_sessions(root: str) -> dict[str, Any]:
+    """List a project's conversation sessions (shared with the terminal)."""
+    return {"sessions": sessions.list_sessions(os.path.realpath(root))}
+
+
+@router.get("/session")
+def code_session(root: str, id: str) -> dict[str, Any]:
+    s = sessions.load(os.path.realpath(root), id)
+    if not s:
+        raise HTTPException(status_code=404, detail="session not found")
+    return s
+
+
+@router.post("/agent/confirm")
+async def code_agent_confirm(request: Request) -> dict[str, Any]:
+    """Relay an ask-mode decision to the harness for a run that is paused waiting
+    on the user. The harness matches it by the id from its 'confirm' event."""
+    body = await request.json()
+    confirm_url = HARNESS_URL.rsplit("/run", 1)[0] + "/confirm"
+    payload = {
+        "id": body.get("id", ""),
+        "decision": body.get("decision", "decline"),
+        "feedback": body.get("feedback", ""),
+    }
+    async with httpx.AsyncClient(timeout=30) as client:
+        resp = await client.post(confirm_url, json=payload)
+        resp.raise_for_status()
+        return resp.json()

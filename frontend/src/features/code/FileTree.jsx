@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Folder, FolderOpen, File, ChevronRight, ChevronDown, FolderUp, FolderSearch } from 'lucide-react';
+import { Folder, FolderOpen, ChevronRight, ChevronDown, FolderUp, FolderSearch } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { code } from '../../lib/api';
+import { FileIcon } from './fileIcons';
 
 function DirRow({ name, path: dirPath, onClick }) {
   return (
@@ -16,7 +17,7 @@ function DirRow({ name, path: dirPath, onClick }) {
   );
 }
 
-function BrowseModal({ onOpen }) {
+export function BrowseModal({ onOpen }) {
   const [path, setPath] = useState('');
   const [parent, setParent] = useState(null);
   const [dirs, setDirs] = useState([]);
@@ -50,7 +51,7 @@ function BrowseModal({ onOpen }) {
         <span className="font-medium text-zinc-300">Browse</span>
       </div>
 
-      <div className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-[#0d0f13] px-3 py-2">
+      <div className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-[#0c0c0e] px-3 py-2">
         {parent !== null && (
           <button
             type="button"
@@ -64,7 +65,7 @@ function BrowseModal({ onOpen }) {
         <span className="truncate text-[13px] text-zinc-200">{path || '~'}</span>
       </div>
 
-      <div className="max-h-60 overflow-y-auto rounded-lg border border-zinc-800 bg-[#0d0f13]">
+      <div className="max-h-60 overflow-y-auto rounded-lg border border-zinc-800 bg-[#0c0c0e]">
         {loading ? (
           <div className="px-3 py-4 text-xs text-zinc-600">Loading...</div>
         ) : error ? (
@@ -132,7 +133,7 @@ function TreeNode({ node, depth, onOpenFile }) {
       className="flex w-full items-center gap-1 rounded-lg px-2 py-1 text-left text-[13px] text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200"
       style={{ paddingLeft: `${depth * 16 + 24}px` }}
     >
-      <File size={15} className="shrink-0 text-zinc-500" />
+      <FileIcon name={node.name} size={15} />
       <span className="truncate">{node.name}</span>
     </button>
   );
@@ -152,7 +153,7 @@ export function FileTree({ root, projectName, tree, onOpenFile, onProjectOpen, o
   }, [onProjectOpen]);
 
   return (
-    <div className="flex h-full w-[260px] shrink-0 flex-col border-r border-zinc-800 bg-[#0e1014]">
+    <div className="flex h-full w-[260px] shrink-0 flex-col border-r border-zinc-800 bg-[#101012]">
       <div className="flex items-center justify-between px-3 py-3">
         <span className="text-sm font-medium text-zinc-300">{projectName || 'Files'}</span>
         <button

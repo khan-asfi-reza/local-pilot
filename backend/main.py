@@ -35,8 +35,10 @@ def create_app() -> FastAPI:
     # holds regardless of how routes/code.py is implemented. CORS does not stop a
     # request from reaching a handler; this check does.
     @app.middleware("http")
-    async def guard_code_routes(request: Request, call_next):
-        if request.url.path.startswith("/code"):
+    async def guard_agent_routes(request: Request, call_next):
+        # /code and /builder drive a full-access agent (files, npm) over real
+        # dirs, so they must not be reachable from the LAN or a malicious page.
+        if request.url.path.startswith(("/code", "/builder")):
             host = request.client.host if request.client else ""
             if host not in _LOCAL_HOSTS:
                 return JSONResponse({"detail": "localhost only"}, status_code=403)
