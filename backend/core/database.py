@@ -3,9 +3,17 @@ from typing import Generator
 
 from sqlmodel import Session, SQLModel, create_engine
 
+from core.appdir import data_dir
+
 
 def get_database_url() -> str:
-    return os.getenv("DATABASE_URL", "sqlite:///./local-pilot.db")
+    # Keep the SQLite DB in the global local-pilot config dir (not a cwd-relative
+    # file), so every entry point resolves the same database.
+    url = os.getenv("DATABASE_URL")
+    if url:
+        return url
+    os.makedirs(data_dir(), exist_ok=True)
+    return f"sqlite:///{os.path.join(data_dir(), 'localpilot.db')}"
 
 
 def get_engine():

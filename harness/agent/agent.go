@@ -27,17 +27,25 @@ type Agent struct {
 // Request is one turn of work. It carries everything the harness needs, since
 // the harness remembers nothing between calls.
 type Request struct {
-	Messages []model.Message
-	Allowed  []string
-	Mode     string
-	WorkDir  string
-	Sandbox  bool // web path: run code_run in an isolated sandbox, not the project
+	Messages     []model.Message
+	Allowed      []string
+	Mode         string
+	WorkDir      string
+	Sandbox      bool     // web path: run code_run in an isolated sandbox, not the project
+	InjectSkills []string // skill names to inject silently regardless of detection
 }
 
-// New builds an agent from a config and an optional skills directory.
+// New builds an agent from a config and an optional skills directory. Alongside
+// that directory's shipped "default" skills, it also scans a sibling
+// "skills_local" directory for user-installed skills (e.g. added via the npx
+// installer), which is never touched by upgrades.
 func New(cfg *model.Config, skillsDir string) (*Agent, error) {
 	client := model.NewClient()
-	skills, err := scanSkills(skillsDir)
+	var localDir string
+	if skillsDir != "" {
+		localDir = filepath.Join(filepath.Dir(skillsDir), "skills_local")
+	}
+	skills, err := scanSkills(skillsDir, localDir)
 	if err != nil {
 		return nil, err
 	}

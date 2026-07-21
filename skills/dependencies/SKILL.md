@@ -1,6 +1,7 @@
 ---
 name: dependencies
 description: Install project dependencies portably in any language, and recover when an install fails (e.g. Python's "externally-managed-environment" / "pip: command not found"). Use whenever you must install packages before building, testing, or serving.
+internal: true
 ---
 
 # Installing dependencies (any language)

@@ -1,0 +1,22 @@
+{
+  "name": "pilot-skill",
+  "version": "0.1.0",
+  "description": "Install local-pilot skills from GitHub, git, or a local path into your local skills directory.",
+  "type": "module",
+  "bin": {
+    "pilot-skill": "index.js"
+  },
+  "files": [
+    "index.js"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "local-pilot",
+    "skills",
+    "agent",
+    "cli"
+  ],
+  "license": "MIT"
+}

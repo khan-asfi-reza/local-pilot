@@ -11,6 +11,7 @@ import (
 	"harness/harness/agent"
 	"harness/harness/events"
 	"harness/harness/model"
+	"harness/harness/projects"
 )
 
 // Run is the headless one-shot entry (`pilot run`): it runs one task to
@@ -46,6 +47,7 @@ func Run(argv []string) {
 	if !isDir(workDir) {
 		fatal("working directory does not exist: %s", workDir)
 	}
+	_, _ = projects.Upsert(workDir, "terminal")
 
 	cfgPath := *configPath
 	if cfgPath == "" {

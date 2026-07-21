@@ -10,6 +10,7 @@ import (
 
 	"harness/harness/agent"
 	"harness/harness/model"
+	"harness/harness/projects"
 )
 
 // Code launches the interactive terminal UI. args are the flags after `code`.
@@ -27,6 +28,9 @@ func Code(args []string) {
 	if !isDir(workDir) {
 		fatal("working directory does not exist: %s", workDir)
 	}
+	// Register the folder in the shared project registry so web Code and Telegram
+	// see the same projects the terminal opens.
+	_, _ = projects.Upsert(workDir, "terminal")
 
 	cfgPath := *configPath
 	if cfgPath == "" {

@@ -47,14 +47,29 @@ func (a *Agent) Run(ctx context.Context, req Request, emit func(events.Event), c
 	defer env.Procs.StopAll()
 	conv := append([]model.Message(nil), req.Messages...)
 
+	// Silently pick up guidance for this task: any skills the caller forces
+	// (e.g. the App Builder forces "app-builder"), then the detected
+	// language/framework skills. All injected into the system prompt, never shown
+	// as a loaded skill.
+	var guides []string
+	for _, name := range req.InjectSkills {
+		if body := a.skills.bodies[name]; body != "" {
+			guides = append(guides, body)
+		}
+	}
+	if d := detectInternalSkills(req.WorkDir, req.Messages, a.skills); d != "" {
+		guides = append(guides, d)
+	}
+	guidance := strings.Join(guides, "\n\n")
+
 	if a.router.ToolMode() == model.ToolModeNative {
 		defs := a.reg.Defs(req.Allowed, includeMutating)
-		system := buildSystem(a.prompt, model.ToolModeNative, agentsMD, a.skills.catalog, repoMap, "", req.Mode)
+		system := buildSystem(a.prompt, model.ToolModeNative, agentsMD, a.skills.catalog, repoMap, "", req.Mode, guidance)
 		return a.runNative(ctx, req, emit, confirm, system, defs, env, conv)
 	}
 
 	toolDocs, names := a.reg.Describe(req.Allowed, includeMutating)
-	system := buildSystem(a.prompt, model.ToolModeJSON, agentsMD, a.skills.catalog, repoMap, toolDocs, req.Mode)
+	system := buildSystem(a.prompt, model.ToolModeJSON, agentsMD, a.skills.catalog, repoMap, toolDocs, req.Mode, guidance)
 	schema := actionSchema(names)
 	return a.runJSON(ctx, req, emit, confirm, system, schema, env, conv)
 }

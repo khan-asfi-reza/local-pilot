@@ -42,7 +42,7 @@ func LoadPrompt() *Prompt {
 // merged project rules, skill catalog, and repo map. In native mode the tools
 // are sent in the API tools array, so toolDocs is empty and the protocol block
 // is omitted — the main token saving over the json path.
-func buildSystem(p *Prompt, toolMode, agentsMD, skillCatalog, repoMap, toolDocs, mode string) string {
+func buildSystem(p *Prompt, toolMode, agentsMD, skillCatalog, repoMap, toolDocs, mode, internalGuidance string) string {
 	var b strings.Builder
 	b.WriteString(p.Role)
 
@@ -73,6 +73,13 @@ func buildSystem(p *Prompt, toolMode, agentsMD, skillCatalog, repoMap, toolDocs,
 	if toolDocs != "" {
 		b.WriteString("\n\nTools you can call:\n")
 		b.WriteString(toolDocs)
+	}
+	// Silent internal-skill guidance for the detected stack. It is part of the
+	// system prompt, not a loaded skill, so the model simply follows it and no
+	// "skill loaded" step is ever shown.
+	if internalGuidance != "" {
+		b.WriteString("\n\nStack guidance for this task (follow these conventions):\n")
+		b.WriteString(internalGuidance)
 	}
 	if agentsMD != "" {
 		b.WriteString("\n\nProject instructions (AGENTS.md):\n")

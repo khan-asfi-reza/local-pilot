@@ -35,3 +35,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .pnpm-store/
+
+# App Builder workspace
+builder/node_modules
+builder/dist
+builder/.vite
+builder_gateway/node_modules

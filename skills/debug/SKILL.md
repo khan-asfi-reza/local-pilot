@@ -1,6 +1,7 @@
 ---
 name: debug
 description: Fix a failing program. Use when a command errors, a test fails, or the user pastes a traceback. Reproduce, read the exact file the error points to, apply one minimal fix, and re-run until it passes.
+internal: true
 ---
 
 # Debugging workflow

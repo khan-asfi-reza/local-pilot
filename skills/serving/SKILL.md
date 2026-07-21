@@ -1,6 +1,7 @@
 ---
 name: serving
 description: Run and verify a web server or app in ANY language or framework (FastAPI, Flask, Django, Express, Next.js, PHP, Laravel, Rails, Sinatra, Spring Boot, .NET, Go, Rust, Phoenix, static). Use whenever the task needs a server started or a running endpoint checked. Never start a server with shell_run — it blocks; use the serve tool, then curl.
+internal: true
 ---
 
 # Running and verifying a server (any language / framework)

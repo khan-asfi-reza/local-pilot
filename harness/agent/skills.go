@@ -8,56 +8,71 @@ import (
 
 // skillSet is the result of scanning the skills directory: a cheap catalog to
 // keep resident, the full bodies to inject on demand, and the names for the
-// load_skill enum.
+// load_skill enum. Internal skills are excluded from the catalog and enum — they
+// are never surfaced to the model or shown as "skill loaded"; the harness injects
+// their bodies silently when it detects the task needs them.
 type skillSet struct {
-	catalog string
-	bodies  map[string]string
-	names   []string
+	catalog  string
+	bodies   map[string]string
+	names    []string
+	internal map[string]bool
 }
 
-// scanSkills reads each skill folder's SKILL.md, taking the name and description
-// from the frontmatter for the catalog and keeping the full body for load_skill.
-func scanSkills(dir string) (skillSet, error) {
-	set := skillSet{bodies: map[string]string{}}
-	if dir == "" {
-		return set, nil
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		// A missing skills directory is not an error; there are simply no skills.
-		if os.IsNotExist(err) {
-			return set, nil
-		}
-		return set, err
-	}
+// scanSkills reads each skill folder's SKILL.md across one or more directories,
+// taking the name and description from the frontmatter for the catalog and
+// keeping the full body for load_skill. Directories are scanned in order and a
+// later one overrides an earlier one by name, so a user's local skill can shadow
+// a default of the same name. Used to merge the shipped "default" skills with
+// the user-installed "local" skills.
+func scanSkills(dirs ...string) (skillSet, error) {
+	set := skillSet{bodies: map[string]string{}, internal: map[string]bool{}}
 	var lines []string
-	for _, e := range entries {
-		if !e.IsDir() {
+	for _, dir := range dirs {
+		if dir == "" {
 			continue
 		}
-		path := filepath.Join(dir, e.Name(), "SKILL.md")
-		raw, err := os.ReadFile(path)
+		entries, err := os.ReadDir(dir)
 		if err != nil {
-			continue
+			// A missing skills directory is not an error; there are simply none there.
+			if os.IsNotExist(err) {
+				continue
+			}
+			return set, err
 		}
-		name, desc := parseFrontmatter(string(raw))
-		if name == "" {
-			name = e.Name()
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			raw, err := os.ReadFile(filepath.Join(dir, e.Name(), "SKILL.md"))
+			if err != nil {
+				continue
+			}
+			name, desc, internal := parseFrontmatter(string(raw))
+			if name == "" {
+				name = e.Name()
+			}
+			first := set.bodies[name] == ""
+			set.bodies[name] = string(raw)
+			set.internal[name] = internal
+			// Internal skills are injected silently by the harness, so they are kept
+			// out of the visible catalog and the load_skill enum.
+			if internal || !first {
+				continue
+			}
+			set.names = append(set.names, name)
+			lines = append(lines, "- "+name+": "+desc)
 		}
-		set.names = append(set.names, name)
-		set.bodies[name] = string(raw)
-		lines = append(lines, "- "+name+": "+desc)
 	}
 	set.catalog = strings.Join(lines, "\n")
 	return set, nil
 }
 
-// parseFrontmatter pulls name and description out of a leading YAML frontmatter
-// block delimited by lines of three dashes.
-func parseFrontmatter(text string) (name, desc string) {
+// parseFrontmatter pulls name, description, and the internal flag out of a
+// leading YAML frontmatter block delimited by lines of three dashes.
+func parseFrontmatter(text string) (name, desc string, internal bool) {
 	lines := strings.Split(text, "\n")
 	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
-		return "", ""
+		return "", "", false
 	}
 	for _, ln := range lines[1:] {
 		if strings.TrimSpace(ln) == "---" {
@@ -69,8 +84,11 @@ func parseFrontmatter(text string) (name, desc string) {
 		if v, ok := frontValue(ln, "description"); ok {
 			desc = v
 		}
+		if v, ok := frontValue(ln, "internal"); ok {
+			internal = strings.EqualFold(strings.TrimSpace(v), "true")
+		}
 	}
-	return name, desc
+	return name, desc, internal
 }
 
 func frontValue(line, key string) (string, bool) {
