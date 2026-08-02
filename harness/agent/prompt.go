@@ -44,7 +44,7 @@ func LoadPrompt() *Prompt {
 // merged project rules, skill catalog, and repo map. In native mode the tools
 // are sent in the API tools array, so toolDocs is empty and the protocol block
 // is omitted — the main token saving over the json path.
-func buildSystem(p *Prompt, toolMode, agentsMD, skillCatalog, repoMap, toolDocs, mode, internalGuidance string) string {
+func buildSystem(p *Prompt, toolMode, agentsMD, projectMemory, skillCatalog, repoMap, toolDocs, mode, internalGuidance string) string {
 	var b strings.Builder
 	b.WriteString(p.Role)
 
@@ -86,6 +86,10 @@ func buildSystem(p *Prompt, toolMode, agentsMD, skillCatalog, repoMap, toolDocs,
 	if agentsMD != "" {
 		b.WriteString("\n\nProject instructions (AGENTS.md):\n")
 		b.WriteString(agentsMD)
+	}
+	if projectMemory != "" {
+		b.WriteString("\n\nProject memory (what has been built so far — evolving state, may be incomplete; the AGENTS.md above is the authority on how to work here):\n")
+		b.WriteString(projectMemory)
 	}
 	if skillCatalog != "" {
 		b.WriteString("\n\nAvailable skills (load one with load_skill when it matches):\n")
@@ -158,6 +162,6 @@ func defaultPrompt() *Prompt {
 		PlanModeNote: "You are in PLAN MODE. This is read-only: the tools that create, edit, or run things are not available right now, on purpose. Your whole job this turn is to produce a PLAN, not to do the work.\n- Use only the read-only tools (search, read_file, list_dir) to investigate if needed.\n- Then reply with the plan: a numbered list of the exact files you would create or change and, briefly, what each contains.\n- Do NOT say you created, wrote, built, ran, or completed anything. Nothing has been done. You are proposing a plan for the user to approve.\n- Planning is always in scope. Never refuse to plan or say it needs a separate session.",
 		JSONProtocol: "Reply with EXACTLY ONE JSON object and nothing else, in this shape:\n{\"reasoning\": \"<one sentence: what you are doing and why>\", \"tool\": \"<a tool name below, or 'final'>\", \"arguments\": { ... }}\n- To use a tool, set \"tool\" to its name and \"arguments\" to its inputs.\n- When the task is done, set \"tool\" to \"final\" and put your reply to the user in arguments.text.",
 		JSONExamples: "Examples. Each is ONE reply (nothing else). In content, real newlines are \\n and quotes are \\\".\n\nCreate a new file:\n{\"reasoning\": \"The file does not exist, so I create it.\", \"tool\": \"write_file\", \"arguments\": {\"path\": \"app/util.py\", \"content\": \"def add(a, b):\\n    return a + b\\n\"}}\n\nRead a file before changing it:\n{\"reasoning\": \"I must change this file, so I read it first to copy exact text.\", \"tool\": \"read_file\", \"arguments\": {\"path\": \"app/auth.py\"}}\n\nFix one line (old_text is the exact line from the file):\n{\"reasoning\": \"The exception class name is wrong; I replace just that line.\", \"tool\": \"edit_file\", \"arguments\": {\"path\": \"app/auth.py\", \"edits\": [{\"old_text\": \"    except jwt.JWTError:\", \"new_text\": \"    except jwt.PyJWTError:\"}]}}\n\nInsert a line after another (put the anchor line AND the new line in new_text):\n{\"reasoning\": \"I add a CORS middleware right after the app is created.\", \"tool\": \"edit_file\", \"arguments\": {\"path\": \"app/main.py\", \"edits\": [{\"old_text\": \"app = FastAPI()\", \"new_text\": \"app = FastAPI()\\napp.add_middleware(CORSMiddleware, allow_origins=[\\\"*\\\"])\"}]}}\n\nRun to verify, then finish:\n{\"reasoning\": \"I check the module imports before finishing.\", \"tool\": \"shell_run\", \"arguments\": {\"command\": \"python -c \\\"import app.main\\\"\"}}\n{\"reasoning\": \"It imported with no error, so the task is done.\", \"tool\": \"final\", \"arguments\": {\"text\": \"Fixed the exception class and verified the module imports.\"}}",
-		Tools: map[string]string{},
+		Tools:        map[string]string{},
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"harness/eval/runner"
 	"harness/harness/appdir"
 	"harness/harness/model"
 	"harness/terminal"
@@ -55,6 +56,13 @@ func main() {
 			fatal(e)
 		}
 		terminal.Run(withConfig(args[1:], cfgPath))
+		return
+	case "eval":
+		cfgPath, e := appdir.Ensure()
+		if e != nil {
+			fatal(e)
+		}
+		runner.Run(withConfig(args[1:], cfgPath))
 		return
 	case "help", "-h", "--help":
 		fmt.Print(helpText())

@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
-  ArrowLeft, ArrowUp, Check, ChevronDown, Compass, Download, Eye, FileCode,
-  Loader2, Play, Plus, Sparkles, Square, Trash2, TriangleAlert, X,
+  ArrowLeft, ArrowUp, Check, ChevronDown, ChevronRight, Compass, Download, Eye,
+  FileCode, Folder, FolderOpen, Loader2, Play, Plus, RefreshCw, Sparkles, Square,
+  Trash2, TriangleAlert, Wrench, X,
 } from 'lucide-react';
 import CodeMirror from '@uiw/react-codemirror';
 import { javascript } from '@codemirror/lang-javascript';
@@ -125,26 +126,112 @@ function ProjectList({ projects, onOpen, onNew, onDelete, navigate }) {
 // --- Source tab ----------------------------------------------------------
 function basename(p) { return p.split('/').pop() || p; }
 
-function SourcePanel({ files, readSource, saveSource, consoleErrors, clearConsole }) {
+// buildTree turns the flat path list the backend returns into a nested
+// dir/file tree so the sidebar reads like an editor, not a path dump.
+function buildTree(paths) {
+  const root = [];
+  const dirs = new Map();
+  for (const p of paths) {
+    const parts = p.split('/');
+    let level = root;
+    let prefix = '';
+    for (let i = 0; i < parts.length - 1; i++) {
+      prefix = prefix ? `${prefix}/${parts[i]}` : parts[i];
+      let node = dirs.get(prefix);
+      if (!node) {
+        node = { type: 'dir', name: parts[i], path: prefix, children: [] };
+        dirs.set(prefix, node);
+        level.push(node);
+      }
+      level = node.children;
+    }
+    level.push({ type: 'file', name: parts[parts.length - 1], path: p });
+  }
+  const sort = (nodes) => {
+    nodes.sort((a, b) => (a.type === b.type ? a.name.localeCompare(b.name) : a.type === 'dir' ? -1 : 1));
+    for (const n of nodes) if (n.children) sort(n.children);
+    return nodes;
+  };
+  return sort(root);
+}
+
+// TreeRows renders one level. Collapse state is tracked as a set of *closed*
+// dirs so directories the agent creates mid-build show up expanded.
+function TreeRows({ nodes, depth, active, closed, onToggle, onPick }) {
+  return nodes.map((node) => {
+    if (node.type === 'dir') {
+      const open = !closed.has(node.path);
+      return (
+        <div key={node.path}>
+          <button
+            type="button"
+            onClick={() => onToggle(node.path)}
+            style={{ paddingLeft: `${depth * 12 + 6}px` }}
+            className="flex w-full items-center gap-1 py-1 pr-2 text-left text-[12px] text-zinc-300 transition-colors hover:bg-zinc-800/40"
+            title={node.path}
+          >
+            {open ? <ChevronDown size={13} className="shrink-0 text-zinc-500" /> : <ChevronRight size={13} className="shrink-0 text-zinc-500" />}
+            {open ? <FolderOpen size={14} className="shrink-0 text-amber-400/70" /> : <Folder size={14} className="shrink-0 text-amber-400/70" />}
+            <span className="truncate">{node.name}</span>
+          </button>
+          {open && (
+            <TreeRows nodes={node.children} depth={depth + 1} active={active} closed={closed} onToggle={onToggle} onPick={onPick} />
+          )}
+        </div>
+      );
+    }
+    return (
+      <button
+        key={node.path}
+        type="button"
+        onClick={() => onPick(node.path)}
+        style={{ paddingLeft: `${depth * 12 + 20}px` }}
+        className={cn(
+          'flex w-full items-center gap-1.5 py-1 pr-2 text-left text-[12px] transition-colors',
+          node.path === active ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200',
+        )}
+        title={node.path}
+      >
+        <FileIcon name={node.name} size={14} />
+        <span className="truncate">{node.name}</span>
+      </button>
+    );
+  });
+}
+
+function SourcePanel({ files, readSource, saveSource, consoleErrors, clearConsole, refreshFiles, fixErrors, busy }) {
   const [active, setActive] = useState('src/App.jsx');
   const [content, setContent] = useState('');
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   const [autoSave, setAutoSave] = useState(() => localStorage.getItem('builder:autoSave') !== 'false');
+  const [closed, setClosed] = useState(() => new Set());
   const saveTimer = useRef(null);
   useEffect(() => { localStorage.setItem('builder:autoSave', String(autoSave)); }, [autoSave]);
+
+  const tree = useMemo(() => buildTree(files), [files]);
+  const toggleDir = useCallback((path) => {
+    setClosed((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (!files.length) return;
     if (!files.includes(active)) setActive(files.find((f) => f.endsWith('App.jsx')) || files[0]);
   }, [files]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Re-read on `files` too: the list is refreshed as the agent writes, so an open
+  // file the agent just rewrote reloads instead of showing stale text.
   useEffect(() => {
     if (!active || dirty) return;
     let cancelled = false;
     readSource(active).then((c) => !cancelled && setContent(c)).catch(() => {});
     return () => { cancelled = true; };
-  }, [active, readSource, dirty]);
+  }, [active, readSource, dirty, files]);
 
   const save = async (text = content) => {
     setSaving(true);
@@ -163,22 +250,28 @@ function SourcePanel({ files, readSource, saveSource, consoleErrors, clearConsol
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex min-h-0 flex-1">
-        <div className="w-56 shrink-0 overflow-y-auto border-r border-zinc-800 bg-[#0c0c0e] py-2">
-          {files.map((f) => (
+        <div className="flex w-56 shrink-0 flex-col border-r border-zinc-800 bg-[#0c0c0e]">
+          <div className="flex shrink-0 items-center gap-1 px-3 py-1.5 text-[11px] font-medium uppercase tracking-wider text-zinc-600">
+            Files
             <button
-              key={f}
               type="button"
-              onClick={() => { setDirty(false); setActive(f); }}
-              className={cn(
-                'flex w-full items-center gap-2 px-3 py-1.5 text-left text-[12px] transition-colors',
-                f === active ? 'bg-zinc-800 text-zinc-100' : 'text-zinc-400 hover:bg-zinc-800/40 hover:text-zinc-200',
-              )}
-              title={f}
+              onClick={refreshFiles}
+              className="ml-auto rounded p-1 text-zinc-600 transition-colors hover:bg-zinc-800 hover:text-zinc-300"
+              title="Refresh files"
             >
-              <FileIcon name={basename(f)} size={15} />
-              <span className="truncate">{f}</span>
+              <RefreshCw size={12} />
             </button>
-          ))}
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto pb-2">
+            <TreeRows
+              nodes={tree}
+              depth={0}
+              active={active}
+              closed={closed}
+              onToggle={toggleDir}
+              onPick={(p) => { setDirty(false); setActive(p); }}
+            />
+          </div>
         </div>
         <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <div className="flex shrink-0 items-center gap-2 border-b border-zinc-800 px-3 py-2">
@@ -214,10 +307,14 @@ function SourcePanel({ files, readSource, saveSource, consoleErrors, clearConsol
               </Button>
             )}
           </div>
+          {/* className="h-full" gives CodeMirror's wrapper a definite height —
+              without it height="100%" resolves to auto and the editor grows past
+              the clipped box instead of scrolling. */}
           <div className="min-h-0 flex-1 overflow-hidden">
             <CodeMirror
               value={content}
               theme={vscodeDark}
+              className="h-full"
               height="100%"
               extensions={[javascript({ jsx: true })]}
               onChange={onChange}
@@ -234,16 +331,26 @@ function SourcePanel({ files, readSource, saveSource, consoleErrors, clearConsol
             <TriangleAlert size={13} className="text-red-400" />
             <span className="text-[12px] font-medium text-zinc-300">Console</span>
             <span className="rounded-full bg-red-500/20 px-1.5 text-[11px] text-red-400">{consoleErrors.length}</span>
-            <button type="button" onClick={clearConsole} className="ml-auto rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300" title="Clear">
+            <button
+              type="button"
+              onClick={fixErrors}
+              disabled={busy}
+              className="ml-auto flex items-center gap-1 rounded-md border border-zinc-800 px-2 py-0.5 text-[11px] text-zinc-300 transition-colors hover:bg-zinc-800 disabled:opacity-40"
+              title="Send these errors to the agent"
+            >
+              <Wrench size={12} /> Fix with AI
+            </button>
+            <button type="button" onClick={clearConsole} className="rounded p-1 text-zinc-500 hover:bg-zinc-800 hover:text-zinc-300" title="Clear">
               <X size={13} />
             </button>
           </div>
-          <div className="overflow-y-auto px-3 py-2">
+          <div className="min-h-0 flex-1 overflow-y-auto px-3 py-2">
             {consoleErrors.map((e) => (
               <pre
                 key={e.id}
                 className={cn('whitespace-pre-wrap break-words py-0.5 font-mono text-[11px]', e.level === 'warn' ? 'text-amber-400/90' : 'text-red-400/90')}
               >
+                {e.count > 1 && <span className="mr-1 rounded bg-zinc-800 px-1 text-zinc-400">×{e.count}</span>}
                 {e.text}
               </pre>
             ))}
@@ -260,7 +367,7 @@ function ProjectView(b) {
     activeName, previewUrl, files, messages, busy, error,
     models, defaultModel, currentModel, setCurrentModel,
     send, stop, readSource, saveSource, run, closeProject, exportUrl, activeId,
-    rename, consoleErrors, clearConsole,
+    rename, consoleErrors, clearConsole, refreshFiles,
   } = b;
   const [draft, setDraft] = useState('');
   const [tab, setTab] = useState('preview');
@@ -440,6 +547,9 @@ function ProjectView(b) {
             saveSource={saveSource}
             consoleErrors={consoleErrors}
             clearConsole={clearConsole}
+            refreshFiles={refreshFiles}
+            fixErrors={() => send('The preview is throwing the runtime errors listed below. Find the cause in the source and fix it.')}
+            busy={busy}
           />
         )}
       </div>

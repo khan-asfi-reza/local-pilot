@@ -62,6 +62,86 @@
     color: #6a6a71;
   }
 
+  /* Token colours for statically highlighted code (the diff viewer). @lezer's
+     classHighlighter emits these tok-* classes; the palette matches VS Code
+     Dark+, so a diff reads like the editor above it. */
+  .diff-hl .tok-comment,
+  .diff-hl .tok-lineComment,
+  .diff-hl .tok-blockComment,
+  .diff-hl .tok-docComment {
+    color: #6a9955;
+  }
+  .diff-hl .tok-keyword,
+  .diff-hl .tok-controlKeyword,
+  .diff-hl .tok-definitionKeyword,
+  .diff-hl .tok-moduleKeyword,
+  .diff-hl .tok-operatorKeyword,
+  .diff-hl .tok-modifier,
+  .diff-hl .tok-self,
+  .diff-hl .tok-null,
+  .diff-hl .tok-bool,
+  .diff-hl .tok-atom,
+  .diff-hl .tok-tagName {
+    color: #569cd6;
+  }
+  .diff-hl .tok-string,
+  .diff-hl .tok-string2,
+  .diff-hl .tok-special.tok-string,
+  .diff-hl .tok-attributeValue {
+    color: #ce9178;
+  }
+  .diff-hl .tok-number,
+  .diff-hl .tok-integer,
+  .diff-hl .tok-float {
+    color: #b5cea8;
+  }
+  .diff-hl .tok-typeName,
+  .diff-hl .tok-className,
+  .diff-hl .tok-namespace,
+  .diff-hl .tok-standard.tok-typeName {
+    color: #4ec9b0;
+  }
+  .diff-hl .tok-function,
+  .diff-hl .tok-macroName {
+    color: #dcdcaa;
+  }
+  .diff-hl .tok-variableName,
+  .diff-hl .tok-propertyName,
+  .diff-hl .tok-attributeName,
+  .diff-hl .tok-labelName {
+    color: #9cdcfe;
+  }
+  .diff-hl .tok-meta,
+  .diff-hl .tok-processingInstruction {
+    color: #c586c0;
+  }
+  .diff-hl .tok-escape,
+  .diff-hl .tok-unit {
+    color: #d7ba7d;
+  }
+  .diff-hl .tok-regexp {
+    color: #d16969;
+  }
+  .diff-hl .tok-invalid {
+    color: #f44747;
+  }
+  .diff-hl .tok-operator,
+  .diff-hl .tok-punctuation,
+  .diff-hl .tok-bracket,
+  .diff-hl .tok-separator {
+    color: #cccccc;
+  }
+  .diff-hl .tok-heading,
+  .diff-hl .tok-strong {
+    font-weight: 600;
+  }
+  .diff-hl .tok-emphasis {
+    font-style: italic;
+  }
+  .diff-hl .tok-link {
+    text-decoration: underline;
+  }
+
   /* Ambient wash for hero areas — a faint indigo/fuchsia glow bleeding from top. */
   .hero-wash {
     background:

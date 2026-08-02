@@ -1,0 +1,14 @@
+{"attempt":0,"failed":["compiles"],"passed":true,"prd":"remove-comments","score":0.8181818181818182,"ts":"2026-08-02T15:15:04Z"}
+{"attempt":0,"failed":null,"passed":true,"prd":"fix-calc-bug","score":1,"ts":"2026-08-02T15:54:27Z"}
+{"attempt":0,"failed":null,"passed":true,"prd":"remove-comments","score":1,"ts":"2026-08-02T15:58:42Z"}
+{"attempt":0,"failed":null,"passed":true,"prd":"rename-var","score":1,"ts":"2026-08-02T16:00:25Z"}
+{"attempt":0,"failed":null,"passed":true,"prd":"palindrome-js","score":1,"ts":"2026-08-02T16:04:09Z"}
+{"attempt":0,"failed":null,"passed":true,"prd":"stats-pylib","score":1,"ts":"2026-08-02T16:08:29Z"}
+{"attempt":0,"failed":null,"passed":true,"prd":"wordcount-go","score":1,"ts":"2026-08-02T16:12:51Z"}
+{"attempt":0,"failed":["quality"],"passed":false,"prd":"landing-page","score":0.7142857142857143,"ts":"2026-08-02T16:26:49Z"}
+{"attempt":0,"failed":["quality"],"passed":false,"prd":"landing-page","score":0.7142857142857143,"ts":"2026-08-02T16:54:23Z"}
+{"attempt":1,"failed":["quality"],"passed":false,"prd":"landing-page","score":0.7142857142857143,"ts":"2026-08-02T17:00:56Z"}
+{"attempt":0,"failed":null,"passed":true,"prd":"landing-page","score":1,"ts":"2026-08-02T17:17:08Z"}
+{"attempt":0,"failed":null,"passed":true,"prd":"snake-html","score":1,"ts":"2026-08-02T17:22:03Z"}
+{"attempt":0,"failed":null,"passed":true,"prd":"todo-cli-py","score":1,"ts":"2026-08-02T17:37:13Z"}
+{"attempt":0,"failed":["manage","django-tests"],"passed":false,"prd":"social-django-drf-react","score":0.3333333333333333,"ts":"2026-08-02T18:13:43Z"}

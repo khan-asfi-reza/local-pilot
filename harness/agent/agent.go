@@ -6,6 +6,7 @@ package agent
 import (
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	"harness/harness/model"
 	"harness/harness/tools"
@@ -22,7 +23,13 @@ type Agent struct {
 	maxSteps      int
 	contextTokens int
 	log           *auditLog
+	bg            sync.WaitGroup // tracks detached background work (memory updates)
 }
+
+// Wait blocks until any background work (async memory updates) has finished. The
+// headless runner calls it before exiting so a detached update is not killed
+// mid-write; the long-lived TUI/server can ignore it.
+func (a *Agent) Wait() { a.bg.Wait() }
 
 // Request is one turn of work. It carries everything the harness needs, since
 // the harness remembers nothing between calls.
@@ -31,9 +38,11 @@ type Request struct {
 	Allowed      []string
 	Mode         string
 	WorkDir      string
-	Sandbox      bool     // web path: run code_run in an isolated sandbox, not the project
-	Chat         bool     // conversational mode: answer inline, no project/file workflow
-	InjectSkills []string // skill names to inject silently regardless of detection
+	Sandbox      bool       // web path: run code_run in an isolated sandbox, not the project
+	Chat         bool       // conversational mode: answer inline, no project/file workflow
+	InjectSkills []string   // skill names to inject silently regardless of detection
+	Grounding    *Grounding // pinned named target(s); set by intake or the eval harness
+	noTriage     bool       // internal: a child sub-task run — skip intake/orchestration/memory
 }
 
 // New builds an agent from a config and an optional skills directory. Alongside

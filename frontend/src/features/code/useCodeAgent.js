@@ -4,7 +4,7 @@ import { code } from '../../lib/api';
 let seq = 0;
 const uid = (p) => `${p}${Date.now()}_${seq++}`;
 
-export function useCodeAgent(onFileChange) {
+export function useCodeAgent(onFileChange, onActivity) {
   const [messages, setMessages] = useState([]);
   const [busy, setBusy] = useState(false);
   // In ask mode the run pauses on a mutating action; pendingConfirm holds the
@@ -20,6 +20,8 @@ export function useCodeAgent(onFileChange) {
   const sessionIdRef = useRef(null); // current .pilot session id (shared w/ terminal)
   const onFileChangeRef = useRef(onFileChange);
   onFileChangeRef.current = onFileChange; // keep the callback fresh without re-subscribing
+  const onActivityRef = useRef(onActivity);
+  onActivityRef.current = onActivity;
 
   const syncRef = useCallback((msgs) => {
     messagesRef.current = msgs;
@@ -94,6 +96,9 @@ export function useCodeAgent(onFileChange) {
     // A completed write/edit carries a diff whose path is the changed file; tell
     // the editor to reload it (live, like VS Code).
     if (ev.diff?.path) onFileChangeRef.current?.(ev.diff.path);
+    // Any finished tool may have added or removed files (write, mkdir, a shell
+    // command), so refresh the tree now instead of waiting for the run to end.
+    onActivityRef.current?.();
   }, [syncRef]);
 
   const pushError = useCallback((text) => {
@@ -131,21 +136,26 @@ export function useCodeAgent(onFileChange) {
   const send = useCallback(
     async (prompt, root, model, mode, onDone) => {
       const userMsg = { id: uid('u'), role: 'user', content: prompt };
-      let msgs;
+
+      // Build the outgoing history from the prior turns (already in the ref)
+      // plus this prompt, explicitly. Reading messagesRef right after
+      // setMessages would miss the new prompt — React hasn't run the updater
+      // yet — which drops the latest turn from both the model input and the
+      // saved session (empty title, "dumb" replies). Only user/assistant text
+      // goes to the model, not the transient tool cards.
+      const outgoing = messagesRef.current
+        .filter((m) => m.role === 'user' || m.role === 'assistant')
+        .map((m) => ({ role: m.role, content: m.content || '' }));
+      outgoing.push({ role: 'user', content: prompt });
+
       setMessages((prev) => {
-        msgs = [...prev, userMsg];
+        const msgs = [...prev, userMsg];
         syncRef(msgs);
         return msgs;
       });
       setBusy(true);
       const controller = new AbortController();
       abortRef.current = controller;
-
-      // Only the real conversation (user/assistant text) goes to the model and
-      // the saved session, not the transient tool cards.
-      const outgoing = messagesRef.current
-        .filter((m) => m.role === 'user' || m.role === 'assistant')
-        .map((m) => ({ role: m.role, content: m.content || '' }));
 
       try {
         await code.streamCodeAgent(root, model, outgoing, (ev) => {

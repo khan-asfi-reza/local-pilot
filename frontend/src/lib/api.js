@@ -4,8 +4,21 @@
 const BASE =
   import.meta.env.VITE_API_URL || `${window.location.protocol}//${window.location.hostname}:8182`;
 
+// Websocket base for the terminal (http -> ws, https -> wss).
+const WS_BASE = BASE.replace(/^http/, 'ws');
+
 async function json(res) {
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+  if (!res.ok) {
+    // FastAPI puts the human-readable reason in `detail`; surface it so the UI can
+    // say "already exists" instead of "409 Conflict".
+    let detail = '';
+    try {
+      detail = (await res.json())?.detail || '';
+    } catch {
+      /* not a JSON error body */
+    }
+    throw new Error(typeof detail === 'string' && detail ? detail : `${res.status} ${res.statusText}`);
+  }
   return res.json();
 }
 
@@ -115,6 +128,53 @@ export const code = {
       body: JSON.stringify({ path }),
     });
     return (await json(res)).project;
+  },
+  // createProject makes <location>/<name> on disk, writes PRD.md when a PRD was
+  // given, and registers the folder as a project.
+  async createProject({ name, location, prd = '' }) {
+    const res = await fetch(`${BASE}/code/projects/new`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, location, prd }),
+    });
+    return json(res); // { project, prd }
+  },
+  async createEntry(root, path, type = 'file') {
+    const res = await fetch(`${BASE}/code/fs/entry`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ root, path, type }),
+    });
+    return json(res); // { ok, path }
+  },
+  async renameEntry(root, path, newPath) {
+    const res = await fetch(`${BASE}/code/fs/entry`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ root, path, new_path: newPath }),
+    });
+    return json(res); // { ok, path }
+  },
+  async deleteEntry(root, path) {
+    const res = await fetch(
+      `${BASE}/code/fs/entry?root=${encodeURIComponent(root)}&path=${encodeURIComponent(path)}`,
+      { method: 'DELETE' },
+    );
+    return json(res); // { ok }
+  },
+  // listTerminals reports the shells still alive for a project, so a reloaded
+  // page reattaches to them instead of spawning duplicates.
+  async listTerminals(root) {
+    return json(await fetch(`${BASE}/code/terminals?root=${encodeURIComponent(root)}`)); // { supported, ids }
+  },
+  async killTerminal(id) {
+    await fetch(`${BASE}/code/terminal?id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+  },
+  // terminalUrl is the websocket for one shell: it streams pty output down as
+  // binary frames and takes {type:'input'|'resize'|'kill'} JSON frames up.
+  terminalUrl(root, id, cols, rows) {
+    const q = new URLSearchParams({ root, id, cols: String(cols), rows: String(rows) });
+    return `${WS_BASE}/code/terminal?${q}`;
   },
   async readTree(root) {
     return json(await fetch(`${BASE}/code/tree?root=${encodeURIComponent(root)}`)); // { root, tree }

@@ -1,7 +1,0 @@
-This directory already has game.py (interactive loop) and logic.py (a pure check_guess function). Finish and extend the project:
-
-1. Write test_logic.py with pytest tests for check_guess covering the higher, lower, and correct cases. Run them with `pytest` and confirm they pass.
-2. Add a hard mode: a variant using numbers 1-1000 with a maximum of 10 guesses. Put any new pure logic in logic.py (e.g. a function that reports whether the player is out of guesses) and add pytest tests for it.
-3. Add a README.md explaining how to play (normal and hard mode) and how to run the tests.
-
-At the end, run the full test suite with `pytest` and report whether every test passed.

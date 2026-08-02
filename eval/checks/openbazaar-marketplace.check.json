@@ -1,0 +1,28 @@
+{
+  "name": "openbazaar-marketplace",
+  "difficulty": 5,
+  "max_steps": 120,
+  "grounding": { "action": "create", "explicit_targets": ["backend/requirements.txt"] },
+  "checks": [
+    { "id": "files", "type": "cmd",
+      "run": "test -f backend/main.py && test -f backend/db.py && test -f backend/logic.py && test -f backend/test_api.py && test -f backend/requirements.txt && test -f frontend/index.html",
+      "expect_exit": 0, "weight": 1, "describe": "all backend + frontend files exist" },
+    { "id": "deps", "type": "cmd",
+      "run": "python3 -m venv .venv && .venv/bin/pip -q install -r backend/requirements.txt httpx",
+      "expect_exit": 0, "weight": 1, "describe": "deps install cleanly" },
+    { "id": "boots", "type": "cmd",
+      "run": ".venv/bin/python -c \"import sys; sys.path.insert(0,'backend'); import main; assert hasattr(main,'app'); print('boots')\"",
+      "expect_exit": 0, "stdout_contains": "boots", "weight": 1, "describe": "the app imports and exposes `app`" },
+    { "id": "self-test", "type": "cmd",
+      "run": ".venv/bin/python backend/test_api.py",
+      "expect_exit": 0, "stdout_contains": "all tests passed", "weight": 5,
+      "describe": "the full auction + CoD test suite passes" },
+    { "id": "endpoints", "type": "cmd",
+      "run": "grep -q '/items' backend/main.py && grep -q '/bid' backend/main.py && grep -q '/orders' backend/main.py && grep -qi 'stream\\|EventSource\\|text/event-stream' backend/main.py",
+      "expect_exit": 0, "weight": 1, "describe": "core endpoints incl. an SSE stream exist" },
+    { "id": "indep-flow", "type": "cmd",
+      "run": ".venv/bin/python -c \"import sys; sys.path.insert(0,'backend'); from fastapi.testclient import TestClient; import main; c=TestClient(main.app); u=c.post('/users',json={'full_name':'A','email':'a@a.com','phone':'1','password_hash':'x'}).json(); uid=u.get('id'); it=c.post('/items',json={'seller_id':uid,'title':'A valid title here now','description':'d','category_id':1,'condition_rating':'GOOD','sale_type':'AUCTION','starting_bid':100,'bid_increment':10,'reserve_price':100,'auction_end_ts':9999999999}).json(); iid=it.get('id'); r=c.post('/items/'+str(iid)+'/bid',json={'bidder_id':uid,'amount':50}); assert r.status_code>=400, 'below-minimum bid must be rejected'; r2=c.post('/items/'+str(iid)+'/bid',json={'bidder_id':uid,'amount':100}); assert r2.status_code<300, 'valid first bid should succeed'; print('indep ok')\"",
+      "expect_exit": 0, "stdout_contains": "indep ok", "weight": 4,
+      "describe": "independent: below-min bid rejected, valid bid accepted via the real API" }
+  ]
+}

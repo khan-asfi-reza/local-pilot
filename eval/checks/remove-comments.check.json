@@ -1,0 +1,19 @@
+{
+  "name": "remove-comments",
+  "difficulty": 1,
+  "seed": "fixtures/remove-comments",
+  "max_steps": 12,
+  "grounding": { "action": "edit", "explicit_targets": ["area.c"], "forbid_new_files": true },
+  "checks": [
+    { "id": "area-exists", "type": "file_exists", "path": "area.c", "weight": 1,
+      "describe": "area.c must still exist" },
+    { "id": "no-comments", "type": "cmd", "run": "! grep -nE '//|/\\*|\\*/' area.c", "expect_exit": 0, "weight": 3,
+      "describe": "area.c must contain no // or /* */ comments" },
+    { "id": "compiles", "type": "cmd", "run": "cc -fsyntax-only area.c", "expect_exit": 0, "weight": 2,
+      "describe": "area.c must still compile after comment removal" },
+    { "id": "decoy-untouched", "type": "file_unchanged", "path": "palindrome_checker.py", "weight": 2, "hard": true,
+      "describe": "must NOT touch the unrelated palindrome_checker.py" },
+    { "id": "no-new-files", "type": "mutated_only", "allow": ["area.c"], "weight": 3, "hard": true,
+      "describe": "ONLY area.c may be created or modified — no confabulated files" }
+  ]
+}

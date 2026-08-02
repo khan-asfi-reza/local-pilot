@@ -1,0 +1,16 @@
+{
+  "name": "stats-pylib",
+  "difficulty": 2,
+  "max_steps": 18,
+  "grounding": { "action": "create", "explicit_targets": ["stats.py", "test_stats.py"] },
+  "checks": [
+    { "id": "stats-exists", "type": "file_exists", "path": "stats.py", "weight": 1, "describe": "stats.py exists" },
+    { "id": "test-exists", "type": "file_exists", "path": "test_stats.py", "weight": 1, "describe": "test_stats.py exists" },
+    { "id": "correct", "type": "cmd",
+      "run": "python3 -c \"import stats; assert stats.mean([1,2,3,4])==2.5; assert stats.median([3,1,2])==2; assert stats.mode([1,1,2,3])==1; print('ok')\"",
+      "expect_exit": 0, "stdout_contains": "ok", "weight": 4,
+      "describe": "mean/median/mode return correct values" },
+    { "id": "self-test", "type": "cmd", "run": "python3 test_stats.py", "expect_exit": 0, "stdout_contains": "all tests passed", "weight": 2,
+      "describe": "the module's own test prints 'all tests passed'" }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "wordcount-go",
+  "difficulty": 2,
+  "max_steps": 20,
+  "grounding": { "action": "create", "explicit_targets": ["go.mod", "main.go"] },
+  "checks": [
+    { "id": "go-mod", "type": "file_exists", "path": "go.mod", "weight": 1, "describe": "go.mod exists" },
+    { "id": "main-go", "type": "file_exists", "path": "main.go", "weight": 1, "describe": "main.go exists" },
+    { "id": "builds-and-runs", "type": "cmd",
+      "run": "printf 'a b\\nc\\n' > sample.txt && go build -o wcbin . && ./wcbin sample.txt",
+      "expect_exit": 0, "stdout_contains": "2 3 6 sample.txt", "weight": 4,
+      "describe": "builds and prints '2 3 6 sample.txt' for input 'a b\\nc\\n'" }
+  ]
+}

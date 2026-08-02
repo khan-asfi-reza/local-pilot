@@ -148,7 +148,17 @@ function normalizeTool(m) {
   }
 }
 
-export function AgentPanel({ root, activePath, onDone, onFileChange, onConfirmChange, onViewDiff }) {
+export function AgentPanel({
+  root,
+  activePath,
+  initialPrompt,
+  onInitialPromptSent,
+  onDone,
+  onFileChange,
+  onActivity,
+  onConfirmChange,
+  onViewDiff,
+}) {
   const {
     messages,
     busy,
@@ -162,7 +172,7 @@ export function AgentPanel({ root, activePath, onDone, onFileChange, onConfirmCh
     sessionId,
     switchSession,
     removeSession,
-  } = useCodeAgent(onFileChange);
+  } = useCodeAgent(onFileChange, onActivity);
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState(null);
   const [currentModel, setCurrentModel] = useState(null);
@@ -170,9 +180,11 @@ export function AgentPanel({ root, activePath, onDone, onFileChange, onConfirmCh
   // 'ask' pauses the agent for approval before each file edit or command;
   // 'auto' applies changes without asking.
   const [mode, setMode] = useState('ask');
+  const [resumed, setResumed] = useState(false);
   const endRef = useRef(null);
   const scrollRef = useRef(null);
   const atBottomRef = useRef(true);
+  const sentRef = useRef(false); // the initial prompt is sent at most once
 
   useEffect(() => {
     listModels()
@@ -187,8 +199,26 @@ export function AgentPanel({ root, activePath, onDone, onFileChange, onConfirmCh
   // Resume the project's latest session on open/reload, so the conversation
   // persists (and matches what the terminal shows for the same folder).
   useEffect(() => {
-    if (root) resume(root);
+    setResumed(false);
+    sentRef.current = false;
+    if (!root) return;
+    resume(root).finally(() => setResumed(true));
   }, [root, resume]);
+
+  // A project created from the New project dialog carries a first instruction.
+  // Send it once the project's history has loaded (resume clears the panel, so
+  // sending earlier would wipe the prompt) and a model is known. The run goes in
+  // auto mode — scaffolding a fresh project should not stop at every write — and
+  // the panel's toggle shows that.
+  useEffect(() => {
+    if (!initialPrompt || sentRef.current || !root || !resumed) return;
+    const model = currentModel || defaultModel;
+    if (!model) return;
+    sentRef.current = true;
+    setMode('auto');
+    onInitialPromptSent?.();
+    send(initialPrompt, root, model, 'auto', () => onDone?.());
+  }, [initialPrompt, resumed, root, currentModel, defaultModel, send, onDone, onInitialPromptSent]);
 
   // Bubble the pending confirm (and its responder) up to CodePage, so the full
   // diff + Approve/Reject can render in the center pane, not just this column.

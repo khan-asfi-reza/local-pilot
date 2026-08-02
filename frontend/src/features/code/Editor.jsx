@@ -1,44 +1,27 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import CodeMirror from '@uiw/react-codemirror';
-import { LanguageDescription } from '@codemirror/language';
-import { languages } from '@codemirror/language-data';
+import { EditorView } from '@codemirror/view';
 import { vscodeDark } from '@uiw/codemirror-theme-vscode';
-import { Save, X } from 'lucide-react';
+import { Save, SquareTerminal, X } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { cn } from '../../lib/utils';
 import { FileIcon } from './fileIcons';
+import { loadLanguage } from '../../lib/languages';
 
 const AUTOSAVE_KEY = 'code:autoSave';
 
-// language-data ships ~140 languages (C, C++, Java, C#, Rust, Go, TS, JSX, Lua,
-// PHP, Ruby, Kotlin, Swift, SQL, YAML, ...), each behind a lazy loader so only
-// the ones actually opened are fetched. Cache loaded supports by language name.
-const langCache = new Map();
+// Code is not prose: kill the browser's red squiggles inside the editor.
+const NO_SPELLCHECK = EditorView.contentAttributes.of({ spellcheck: 'false', autocorrect: 'off' });
 
 function basename(path) {
   return path.split('/').pop() || path;
 }
 
-// loadLanguage resolves the CodeMirror language extension for a filename, or []
-// (plain text) when the extension is unknown. Async because each parser is a
-// separate lazily-loaded chunk.
-async function loadLanguage(path) {
-  const desc = LanguageDescription.matchFilename(languages, basename(path));
-  if (!desc) return [];
-  if (langCache.has(desc.name)) return langCache.get(desc.name);
-  try {
-    const support = await desc.load();
-    langCache.set(desc.name, support);
-    return support;
-  } catch {
-    return [];
-  }
-}
-
-export function Editor({ openFiles, activePath, onTabClick, onChange, onSave, onClose }) {
+export function Editor({ openFiles, activePath, onTabClick, onChange, onSave, onClose, onToggleTerminal }) {
   const active = openFiles.find((f) => f.path === activePath);
-  const [langExt, setLangExt] = useState([]);
+  const [langExt, setLangExt] = useState(null);
   const [autoSave, setAutoSave] = useState(() => localStorage.getItem(AUTOSAVE_KEY) !== 'false');
+  const extensions = useMemo(() => (langExt ? [NO_SPELLCHECK, langExt] : [NO_SPELLCHECK]), [langExt]);
 
   useEffect(() => {
     localStorage.setItem(AUTOSAVE_KEY, String(autoSave));
@@ -49,7 +32,7 @@ export function Editor({ openFiles, activePath, onTabClick, onChange, onSave, on
   useEffect(() => {
     let cancelled = false;
     if (!activePath) {
-      setLangExt([]);
+      setLangExt(null);
       return undefined;
     }
     loadLanguage(activePath).then((ext) => {
@@ -86,9 +69,8 @@ export function Editor({ openFiles, activePath, onTabClick, onChange, onSave, on
 
   return (
     <div className="flex min-w-0 flex-1 flex-col">
-      {openFiles.length > 0 && (
-        <div className="flex shrink-0 items-center overflow-x-auto border-b border-zinc-800 bg-[#101012]">
-          {openFiles.map((f) => {
+      <div className="flex shrink-0 items-center overflow-x-auto border-b border-zinc-800 bg-[#101012]">
+        {openFiles.map((f) => {
             const isActive = f.path === activePath;
             return (
               <button
@@ -117,7 +99,17 @@ export function Editor({ openFiles, activePath, onTabClick, onChange, onSave, on
               </button>
             );
           })}
-          <div className="ml-auto flex shrink-0 items-center gap-1 px-2">
+        <div className="ml-auto flex shrink-0 items-center gap-1 px-2">
+            {onToggleTerminal && (
+              <button
+                type="button"
+                onClick={onToggleTerminal}
+                title="Toggle terminal (Ctrl+`)"
+                className="rounded-md p-1.5 text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+              >
+                <SquareTerminal size={15} />
+              </button>
+            )}
             <button
               type="button"
               role="switch"
@@ -151,11 +143,10 @@ export function Editor({ openFiles, activePath, onTabClick, onChange, onSave, on
               <Save size={14} />
               Save
             </Button>
-          </div>
         </div>
-      )}
+      </div>
 
-      <div className="flex-1 overflow-hidden bg-[#0c0c0e]">
+      <div className="min-h-0 flex-1 overflow-hidden bg-[#0c0c0e]">
         {active ? (
           <CodeMirror
             key={active.path}
@@ -163,7 +154,7 @@ export function Editor({ openFiles, activePath, onTabClick, onChange, onSave, on
             theme={vscodeDark}
             className="h-full"
             height="100%"
-            extensions={[langExt]}
+            extensions={extensions}
             onChange={(val) => onChange(active.path, val)}
             basicSetup={{ lineNumbers: true, foldGutter: true, highlightActiveLineGutter: true }}
           />

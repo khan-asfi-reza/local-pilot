@@ -26,6 +26,7 @@ func Run(argv []string) {
 	mode := fs.String("mode", "auto", "tool mode: auto, ask, or plan (headless runs auto)")
 	format := fs.String("format", "ndjson", "event output format: ndjson or human")
 	maxSteps := fs.Int("max-steps", 0, "override the per-request step cap (0 = default)")
+	grounding := fs.String("grounding", "", "path to a JSON grounding contract {action, explicit_targets} pinning the named target(s)")
 	_ = fs.Parse(argv)
 
 	prompt := *task
@@ -95,8 +96,19 @@ func Run(argv []string) {
 		Mode:     *mode,
 		WorkDir:  workDir,
 	}
+	// A grounding contract (from the eval harness) pins the named target(s) so the
+	// loop verifies they were actually changed instead of running intake itself.
+	if *grounding != "" {
+		if raw, err := os.ReadFile(*grounding); err == nil {
+			var g agent.Grounding
+			if json.Unmarshal(raw, &g) == nil {
+				req.Grounding = &g
+			}
+		}
+	}
 	// Headless auto mode never pauses for confirmation, so confirm is nil.
 	ag.Run(context.Background(), req, emit, nil)
+	ag.Wait() // let any background memory update finish before exiting
 	os.Exit(exitCode)
 }
 

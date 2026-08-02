@@ -1,0 +1,26 @@
+{
+  "name": "fullstack-todo",
+  "difficulty": 4,
+  "max_steps": 40,
+  "grounding": { "action": "create", "explicit_targets": ["backend/main.py", "backend/requirements.txt", "backend/test_api.py", "frontend/index.html"] },
+  "checks": [
+    { "id": "files", "type": "cmd",
+      "run": "test -f backend/main.py && test -f backend/requirements.txt && test -f backend/test_api.py && test -f frontend/index.html",
+      "expect_exit": 0, "weight": 1, "describe": "all four required files exist" },
+    { "id": "deps", "type": "cmd",
+      "run": "python3 -m venv .venv && .venv/bin/pip -q install -r backend/requirements.txt",
+      "expect_exit": 0, "weight": 1, "describe": "backend deps install cleanly" },
+    { "id": "api-tests", "type": "cmd",
+      "run": ".venv/bin/python backend/test_api.py",
+      "expect_exit": 0, "stdout_contains": "all api tests passed", "weight": 4,
+      "describe": "TestClient CRUD suite passes" },
+    { "id": "cors", "type": "cmd", "run": "grep -q CORSMiddleware backend/main.py", "expect_exit": 0, "weight": 1,
+      "describe": "CORS middleware enabled" },
+    { "id": "frontend-wired", "type": "cmd", "run": "grep -qi react frontend/index.html && grep -q '/todos' frontend/index.html", "expect_exit": 0, "weight": 1,
+      "describe": "frontend loads React and calls /todos" },
+    { "id": "frontend-quality", "type": "judge", "files": ["frontend/index.html"],
+      "criterion": "A single self-contained HTML page using React from a CDN that renders a todo list, has a text input + Add button that POSTs, and a Delete button per todo.",
+      "rubric": "1.0 = all behaviors present and wired to the API; 0.5 = list renders but add or delete missing; 0.0 = not a working React todo UI.",
+      "weight": 2, "describe": "frontend implements the required UI behaviors" }
+  ]
+}

@@ -1,12 +1,15 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { FolderOpen, X, SquareCode } from 'lucide-react';
 import { code } from '../../lib/api';
-import { FileTree, BrowseModal } from './FileTree';
+import { FileTree } from './FileTree';
 import { Editor } from './Editor';
 import { AgentPanel } from './AgentPanel';
 import { DiffReview } from './DiffReview';
-import { SettingsButton } from '../settings/SettingsButton';
+import { StartScreen } from './StartScreen';
+import { TerminalPanel } from './TerminalPanel';
+
+const TERM_HEIGHT_KEY = 'code:terminalHeight';
+const TREE_POLL_MS = 2500;
 
 export function CodePage() {
   const navigate = useNavigate();
@@ -16,19 +19,37 @@ export function CodePage() {
   const [openFiles, setOpenFiles] = useState([]);
   const [activePath, setActivePath] = useState(null);
   const [tree, setTree] = useState(null);
-  const [browseOpen, setBrowseOpen] = useState(false);
+  // A freshly created project can carry a first instruction for the agent.
+  const [initialPrompt, setInitialPrompt] = useState(null);
+  // The last path the agent touched, so the tree can expand down to it.
+  const [revealPath, setRevealPath] = useState(null);
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const [terminalHeight, setTerminalHeight] = useState(
+    () => Number(localStorage.getItem(TERM_HEIGHT_KEY)) || 240,
+  );
   // Ask-mode review: the pending confirm (bubbled up from AgentPanel) and whether
   // its diff is showing in the center pane instead of the editor.
   const [confirmState, setConfirmState] = useState(null); // { confirm, respond } | null
   const [reviewOpen, setReviewOpen] = useState(false);
+  const treeJsonRef = useRef('');
 
+  useEffect(() => {
+    localStorage.setItem(TERM_HEIGHT_KEY, String(terminalHeight));
+  }, [terminalHeight]);
+
+  // refreshTree re-reads the tree but only re-renders when it actually changed,
+  // so the 2.5s poll below stays invisible.
   const refreshTree = useCallback(async () => {
     if (!root) return;
     try {
       const data = await code.readTree(root);
-      setTree(data.tree || []);
+      const next = JSON.stringify(data.tree || []);
+      if (next !== treeJsonRef.current) {
+        treeJsonRef.current = next;
+        setTree(data.tree || []);
+      }
     } catch {
-      setTree([]);
+      /* backend down; keep the last good tree */
     }
   }, [root]);
 
@@ -70,21 +91,40 @@ export function CodePage() {
     [root, openFiles],
   );
 
-  const closeFile = useCallback(
+  const closeFile = useCallback((path) => {
+    setOpenFiles((prev) => {
+      const remaining = prev.filter((f) => f.path !== path);
+      setActivePath((cur) => (cur === path ? remaining[remaining.length - 1]?.path ?? null : cur));
+      return remaining;
+    });
+  }, []);
+
+  // A file deleted from the tree cannot stay open in a tab.
+  const handleDeleted = useCallback(
     (path) => {
-      setOpenFiles((prev) => prev.filter((f) => f.path !== path));
-      setActivePath((prev) => {
-        if (prev !== path) return prev;
-        const remaining = openFiles.filter((f) => f.path !== path);
-        return remaining.length > 0 ? remaining[remaining.length - 1].path : null;
+      setOpenFiles((prev) => {
+        const remaining = prev.filter((f) => f.path !== path && !f.path.startsWith(`${path}/`));
+        setActivePath((cur) =>
+          cur === path || cur?.startsWith(`${path}/`) ? remaining[remaining.length - 1]?.path ?? null : cur,
+        );
+        return remaining;
       });
     },
-    [openFiles],
+    [],
   );
+
+  // A rename has to follow through to the open tabs, including files inside a
+  // renamed folder.
+  const handleRenamed = useCallback((from, to) => {
+    const moved = (p) => (p === from ? to : p.startsWith(`${from}/`) ? to + p.slice(from.length) : p);
+    setOpenFiles((prev) => prev.map((f) => ({ ...f, path: moved(f.path) })));
+    setActivePath((cur) => (cur ? moved(cur) : cur));
+  }, []);
 
   const reloadOpenFile = useCallback(
     async (path) => {
       if (!root || !path) return;
+      setRevealPath(path);
       let data;
       try {
         data = await code.readFile(root, path);
@@ -102,14 +142,12 @@ export function CodePage() {
   // applyProject loads a project's tree into the editor without touching the URL.
   const applyProject = useCallback(async (proj) => {
     if (!proj) return;
-    try {
-      setRoot(proj.path);
-      setProjectName(proj.name);
-      const data = await code.readTree(proj.path);
-      setTree(data.tree || []);
-    } catch {
-      /* backend down */
-    }
+    treeJsonRef.current = '';
+    setOpenFiles([]);
+    setActivePath(null);
+    setTree(null);
+    setRoot(proj.path);
+    setProjectName(proj.name);
   }, []);
 
   // Opening a project also puts its id in the URL, so reload/back restores it.
@@ -138,19 +176,38 @@ export function CodePage() {
     };
   }, [projectId, root, applyProject]);
 
-  // The empty-state dialog hands back a path; register it as a project, then open.
+  // The start screen hands back a folder path; register it as a project, then
+  // open it. Errors bubble so the picker can show them.
   const openFromPath = useCallback(
     async (path) => {
-      try {
-        const proj = await code.openProject(path);
-        setBrowseOpen(false);
-        handleProjectOpen(proj);
-      } catch (e) {
-        alert(String(e));
-      }
+      const proj = await code.openProject(path);
+      handleProjectOpen(proj);
     },
     [handleProjectOpen],
   );
+
+  // A new project opens straight away; its first instruction (if any) is handed
+  // to the agent panel, which sends it once the project is loaded.
+  const handleProjectCreated = useCallback(
+    (proj, prompt) => {
+      setInitialPrompt(prompt || null);
+      handleProjectOpen(proj);
+    },
+    [handleProjectOpen],
+  );
+
+  // Closing a project drops back to the start screen — the one place that opens
+  // or creates projects.
+  const closeProject = useCallback(() => {
+    setRoot(null);
+    setProjectName(null);
+    setTree(null);
+    setOpenFiles([]);
+    setActivePath(null);
+    setTerminalOpen(false);
+    treeJsonRef.current = '';
+    navigate('/code');
+  }, [navigate]);
 
   const handleAgentDone = useCallback(() => {
     refreshTree();
@@ -163,55 +220,35 @@ export function CodePage() {
     if (root) refreshTree();
   }, [root, refreshTree]);
 
+  // Poll while a project is open, so files created by the agent or by a command
+  // in the terminal show up on their own.
+  useEffect(() => {
+    if (!root) return undefined;
+    const timer = setInterval(() => {
+      if (!document.hidden) refreshTree();
+    }, TREE_POLL_MS);
+    return () => clearInterval(timer);
+  }, [root, refreshTree]);
+
+  useEffect(() => {
+    if (!root) return undefined;
+    const onKey = (e) => {
+      if (e.key === '`' && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        setTerminalOpen((v) => !v);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [root]);
+
   if (!root) {
     return (
-      <div className="hero-wash relative flex h-full flex-col items-center justify-center px-6">
-        <SettingsButton className="absolute right-4 top-4" />
-        <div className="flex w-full max-w-md flex-col items-center text-center">
-          <span className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-glow">
-            <SquareCode size={30} strokeWidth={2} />
-          </span>
-          <p className="eyebrow mb-3">Local workspace</p>
-          <h1 className="text-3xl font-semibold tracking-tight text-zinc-100">Open a project</h1>
-          <p className="mt-2 text-[15px] leading-relaxed text-zinc-400">
-            Point the editor at a folder on this machine. Browse the tree, edit files, and let the agent
-            work directly in your project.
-          </p>
-          <button
-            type="button"
-            onClick={() => setBrowseOpen(true)}
-            className="mt-7 inline-flex items-center gap-2 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 px-5 py-2.5 text-sm font-medium text-white shadow-glow transition-transform hover:-translate-y-0.5"
-          >
-            <FolderOpen size={17} strokeWidth={2} />
-            Open folder
-          </button>
-        </div>
-
-        {browseOpen && (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
-            onClick={() => setBrowseOpen(false)}
-          >
-            <div
-              className="w-full max-w-md overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-850 shadow-2xl"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
-                <span className="text-sm font-medium text-zinc-200">Open a folder</span>
-                <button
-                  type="button"
-                  onClick={() => setBrowseOpen(false)}
-                  className="rounded-lg p-1 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
-                  aria-label="Close"
-                >
-                  <X size={16} />
-                </button>
-              </div>
-              <BrowseModal onOpen={openFromPath} />
-            </div>
-          </div>
-        )}
-      </div>
+      <StartScreen
+        onOpenProject={handleProjectOpen}
+        onOpenPath={openFromPath}
+        onCreated={handleProjectCreated}
+      />
     );
   }
 
@@ -221,32 +258,50 @@ export function CodePage() {
         root={root}
         projectName={projectName}
         tree={tree}
+        activePath={activePath}
+        revealPath={revealPath}
         onOpenFile={openFile}
-        onProjectOpen={handleProjectOpen}
+        onCloseProject={closeProject}
         onRefresh={refreshTree}
+        onDeleted={handleDeleted}
+        onRenamed={handleRenamed}
       />
-      {reviewOpen && confirmState ? (
-        <DiffReview
-          confirm={confirmState.confirm}
-          onApprove={(note) => confirmState.respond('approve', note)}
-          onReject={(note) => confirmState.respond('decline', note)}
-          onClose={() => setReviewOpen(false)}
-        />
-      ) : (
-        <Editor
-          openFiles={openFiles}
-          activePath={activePath}
-          onTabClick={setActivePath}
-          onChange={changeFile}
-          onSave={saveFile}
-          onClose={closeFile}
-        />
-      )}
+      <div className="flex min-w-0 flex-1 flex-col">
+        {reviewOpen && confirmState ? (
+          <DiffReview
+            confirm={confirmState.confirm}
+            onApprove={(note) => confirmState.respond('approve', note)}
+            onReject={(note) => confirmState.respond('decline', note)}
+            onClose={() => setReviewOpen(false)}
+          />
+        ) : (
+          <Editor
+            openFiles={openFiles}
+            activePath={activePath}
+            onTabClick={setActivePath}
+            onChange={changeFile}
+            onSave={saveFile}
+            onClose={closeFile}
+            onToggleTerminal={() => setTerminalOpen((v) => !v)}
+          />
+        )}
+        {terminalOpen && (
+          <TerminalPanel
+            root={root}
+            height={terminalHeight}
+            onHeightChange={setTerminalHeight}
+            onClose={() => setTerminalOpen(false)}
+          />
+        )}
+      </div>
       <AgentPanel
         root={root}
         activePath={activePath}
+        initialPrompt={initialPrompt}
+        onInitialPromptSent={() => setInitialPrompt(null)}
         onDone={handleAgentDone}
         onFileChange={reloadOpenFile}
+        onActivity={refreshTree}
         onConfirmChange={setConfirmState}
         onViewDiff={() => setReviewOpen(true)}
       />

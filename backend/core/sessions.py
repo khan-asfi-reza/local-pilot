@@ -66,7 +66,8 @@ def list_sessions(root: str) -> list[dict]:
         except Exception:
             continue
         if s.get("id"):
-            out.append({"id": s["id"], "title": s.get("title", ""),
+            title = s.get("title") or _title(s.get("messages", []))
+            out.append({"id": s["id"], "title": title,
                         "updated_at": s.get("updated_at", ""), "model": s.get("model")})
     out.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
     return out

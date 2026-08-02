@@ -31,7 +31,31 @@ func (a *Agent) Run(ctx context.Context, req Request, emit func(events.Event), c
 			userEmit(ev)
 		}
 	}
+	// Decide orchestration analytically. A big document wins outright and skips the
+	// slow intake call (size already decides). Otherwise intake once for the
+	// grounding contract + the file-count fallback. Skipped for chat/plan/children.
+	if !req.noTriage && !req.Chat && req.Mode != tools.ModePlan {
+		promptText := lastUserText(req.Messages)
+		if isBigDocument(promptText) {
+			return a.runOrchestrated(ctx, req, emit, confirm, nil)
+		}
+		c := a.intake(ctx, promptText)
+		if c != nil && req.Grounding == nil {
+			req.Grounding = &Grounding{Action: c.Action, ExplicitTargets: c.ExplicitTargets}
+		}
+		if c != nil && c.FileCount >= 4 {
+			return a.runOrchestrated(ctx, req, emit, confirm, c)
+		}
+	}
+
 	agentsMD := discoverAgentsMD(req.WorkDir)
+	// Write an AGENTS.md (and seed memory) before the first task if the project has none.
+	if a.shouldBootstrap(req, agentsMD) {
+		if md := a.bootstrapProject(ctx, req); md != "" {
+			agentsMD = md
+		}
+	}
+	projMemory := discoverMemory(req.WorkDir)
 	repoMap := buildRepoMap(req.WorkDir)
 	includeMutating := req.Mode != tools.ModePlan
 
@@ -66,27 +90,33 @@ func (a *Agent) Run(ctx context.Context, req Request, emit func(events.Event), c
 		guidance = strings.Join(guides, "\n\n")
 	}
 
+	changed := map[string]bool{} // files mutated this run, for the memory update
+
 	if a.router.ToolMode() == model.ToolModeNative {
 		defs := a.reg.Defs(req.Allowed, includeMutating)
-		system := buildSystem(a.prompt, model.ToolModeNative, agentsMD, a.skills.catalog, repoMap, "", req.Mode, guidance)
+		system := buildSystem(a.prompt, model.ToolModeNative, agentsMD, projMemory, a.skills.catalog, repoMap, "", req.Mode, guidance)
 		if req.Chat {
 			system = buildChatSystem(a.prompt, model.ToolModeNative, "")
 		}
-		return a.runNative(ctx, req, emit, confirm, system, defs, env, conv)
+		conv = a.runNative(ctx, req, emit, confirm, system, defs, env, conv, changed)
+		a.scheduleMemoryUpdate(req, changed)
+		return conv
 	}
 
 	toolDocs, names := a.reg.Describe(req.Allowed, includeMutating)
-	system := buildSystem(a.prompt, model.ToolModeJSON, agentsMD, a.skills.catalog, repoMap, toolDocs, req.Mode, guidance)
+	system := buildSystem(a.prompt, model.ToolModeJSON, agentsMD, projMemory, a.skills.catalog, repoMap, toolDocs, req.Mode, guidance)
 	if req.Chat {
 		system = buildChatSystem(a.prompt, model.ToolModeJSON, toolDocs)
 	}
 	schema := actionSchema(names)
-	return a.runJSON(ctx, req, emit, confirm, system, schema, env, conv)
+	conv = a.runJSON(ctx, req, emit, confirm, system, schema, env, conv, changed)
+	a.scheduleMemoryUpdate(req, changed)
+	return conv
 }
 
 // runNative drives the loop with native tool calls: each turn's tool_calls are
 // dispatched and fed back as role:"tool" messages; a turn with none is the final.
-func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Event), confirm tools.ConfirmFunc, system string, defs []model.ToolDef, env tools.Env, conv []model.Message) []model.Message {
+func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Event), confirm tools.ConfirmFunc, system string, defs []model.ToolDef, env tools.Env, conv []model.Message, changed map[string]bool) []model.Message {
 	seen := map[string]int{}
 	repeatNudged := map[string]bool{}
 	totalTokens := 0
@@ -95,6 +125,14 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 	depsInjected := false
 	finishNudged := false
 	usedTools := false
+
+	// Grounding: named targets, which were mutated, whether anything changed, nudge guards.
+	targets := req.Grounding.Targets()
+	mutatedTargets := map[string]bool{}
+	mutatedAny := false
+	groundingNudged := false
+	driftNudged := false
+	falseDoneNudged := false
 
 	// onDelta streams the model's tokens live: the answer as text, the thinking as
 	// reasoning. Content is therefore already shown by the time a turn returns, so
@@ -125,6 +163,30 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 			if text == "" {
 				text = strings.TrimSpace(msg.Reasoning)
 			}
+			// Grounding gate: nudge once if a named target was never changed, then fail hard.
+			if !req.Chat && req.Grounding.RequiresMutation() {
+				if missing := missingTargets(targets, mutatedTargets); len(missing) > 0 {
+					if !groundingNudged {
+						groundingNudged = true
+						conv = append(conv, model.Message{Role: "assistant", Content: text})
+						conv = append(conv, model.Message{Role: "user", Content: groundingMissMsg(missing)})
+						continue
+					}
+					emit(events.Error("grounding failure: finished without modifying the named target(s): " + strings.Join(missing, ", ")))
+					return conv
+				}
+			}
+			// False-completion guard: a coding task that changed no file at all.
+			if !req.Chat && req.Grounding.IsCoding() && !mutatedAny {
+				if !falseDoneNudged {
+					falseDoneNudged = true
+					conv = append(conv, model.Message{Role: "assistant", Content: text})
+					conv = append(conv, model.Message{Role: "user", Content: falseDoneMsg})
+					continue
+				}
+				emit(events.Error("false completion: finished a create/edit/fix task without any file mutation"))
+				return conv
+			}
 			// Nudge once before accepting the finish, but only if the turn actually
 			// did tool work — a plain answer or chat reply finishes immediately. In
 			// chat mode there is no project to verify, so never nudge.
@@ -148,6 +210,18 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 			emit(events.ToolCall(tc.Function.Name, summarizeCall(tc), tc.Function.Arguments))
 			result, diff := a.reg.Dispatch(tc, req.Allowed, req.Mode, env, confirm)
 			emit(events.ToolResult(tc.Function.Name, shortResult(result), result, diff))
+
+			// Record mutations; trip the drift alarm on a non-target before any named target.
+			if diff != nil && diff.Path != "" {
+				mutatedAny = true
+				changed[diff.Path] = true
+				if t, ok := targetHit(targets, diff.Path); ok {
+					mutatedTargets[t] = true
+				} else if len(targets) > 0 && len(mutatedTargets) == 0 && !driftNudged {
+					driftNudged = true
+					conv = append(conv, model.Message{Role: "user", Content: driftMsg(diff.Path, targets)})
+				}
+			}
 
 			conv = append(conv, model.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: result})
 			if isFailure(result) {
@@ -210,7 +284,7 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 }
 
 // runJSON drives the grammar-constrained JSON-ReAct fallback (tool_mode "json").
-func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event), confirm tools.ConfirmFunc, system string, schema json.RawMessage, env tools.Env, conv []model.Message) []model.Message {
+func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event), confirm tools.ConfirmFunc, system string, schema json.RawMessage, env tools.Env, conv []model.Message, changed map[string]bool) []model.Message {
 	seen := map[string]int{}
 	totalTokens := 0
 	debugInjected := false
@@ -218,6 +292,14 @@ func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event
 	runNudged := false
 	editFails := map[string]int{} // failed edit_file attempts per path
 	editNudged := map[string]bool{}
+
+	// Grounding (mirrors runNative).
+	targets := req.Grounding.Targets()
+	mutatedTargets := map[string]bool{}
+	mutatedAny := false
+	groundingNudged := false
+	driftNudged := false
+	falseDoneNudged := false
 
 	for step := 0; step < a.maxSteps; step++ {
 		// Refresh the working-directory tree each step so the model always sees the
@@ -246,6 +328,31 @@ func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event
 				text = act.Reasoning
 			}
 			text = finalText(text)
+
+			// Grounding gate: nudge once, then fail hard.
+			if !req.Chat && req.Grounding.RequiresMutation() {
+				if missing := missingTargets(targets, mutatedTargets); len(missing) > 0 {
+					if !groundingNudged {
+						groundingNudged = true
+						conv = append(conv, model.Message{Role: "assistant", Content: raw})
+						conv = append(conv, model.Message{Role: "user", Content: groundingMissMsg(missing)})
+						continue
+					}
+					emit(events.Error("grounding failure: finished without modifying the named target(s): " + strings.Join(missing, ", ")))
+					return conv
+				}
+			}
+			if !req.Chat && req.Grounding.IsCoding() && !mutatedAny {
+				if !falseDoneNudged {
+					falseDoneNudged = true
+					conv = append(conv, model.Message{Role: "assistant", Content: raw})
+					conv = append(conv, model.Message{Role: "user", Content: falseDoneMsg})
+					continue
+				}
+				emit(events.Error("false completion: finished a create/edit/fix task without any file mutation"))
+				return conv
+			}
+
 			emit(events.Text(text))
 			conv = append(conv, model.Message{Role: "assistant", Content: text})
 			emit(events.Done())
@@ -269,6 +376,18 @@ func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event
 		// Record the step and feed the observation back for the next turn.
 		conv = append(conv, model.Message{Role: "assistant", Content: raw})
 		conv = append(conv, model.Message{Role: "user", Content: fmt.Sprintf("Result of %s:\n%s", tc.Function.Name, result)})
+
+		// Record mutations; trip the drift alarm on a non-target before any named target.
+		if diff != nil && diff.Path != "" {
+			mutatedAny = true
+			changed[diff.Path] = true
+			if t, ok := targetHit(targets, diff.Path); ok {
+				mutatedTargets[t] = true
+			} else if len(targets) > 0 && len(mutatedTargets) == 0 && !driftNudged {
+				driftNudged = true
+				conv = append(conv, model.Message{Role: "user", Content: driftMsg(diff.Path, targets)})
+			}
+		}
 
 		// Detect a repeated action with the same result. Rather than hard-stop on
 		// the first repeat, nudge the model to change course; only give up if it

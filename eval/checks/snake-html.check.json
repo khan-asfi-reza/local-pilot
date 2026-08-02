@@ -1,0 +1,19 @@
+{
+  "name": "snake-html",
+  "difficulty": 3,
+  "max_steps": 16,
+  "grounding": { "action": "create", "explicit_targets": ["index.html"] },
+  "checks": [
+    { "id": "exists", "type": "file_exists", "path": "index.html", "weight": 1, "describe": "index.html exists" },
+    { "id": "has-canvas", "type": "cmd", "run": "grep -qi '<canvas' index.html", "expect_exit": 0, "weight": 1,
+      "describe": "uses a <canvas> element" },
+    { "id": "keyboard", "type": "cmd", "run": "grep -qiE 'keydown|arrow' index.html", "expect_exit": 0, "weight": 1,
+      "describe": "handles keyboard input" },
+    { "id": "no-cdn", "type": "cmd", "run": "! grep -qE 'src=\"https?:|href=\"https?:.*\\.css' index.html", "expect_exit": 0, "weight": 1,
+      "describe": "no external scripts or stylesheets" },
+    { "id": "playable", "type": "judge", "files": ["index.html"],
+      "criterion": "A single-file HTML5 canvas Snake game: arrow keys steer a snake that grows on eating food, food respawns, the game ends on wall/self collision, and a score is shown. All JS/CSS inline.",
+      "rubric": "1.0 = a complete, playable Snake with growth, food respawn, collision game-over, and score; 0.5 = renders and moves but missing collision or score or growth; 0.0 = not a working snake game.",
+      "weight": 3, "describe": "implements a real, playable Snake game" }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "landing-page",
+  "difficulty": 3,
+  "max_steps": 16,
+  "grounding": { "action": "create", "explicit_targets": ["index.html"] },
+  "checks": [
+    { "id": "exists", "type": "file_exists", "path": "index.html", "weight": 1, "describe": "index.html exists" },
+    { "id": "hero", "type": "cmd", "run": "grep -q 'id=\"hero\"' index.html", "expect_exit": 0, "weight": 1, "describe": "has #hero section" },
+    { "id": "features", "type": "cmd", "run": "grep -q 'id=\"features\"' index.html", "expect_exit": 0, "weight": 1, "describe": "has #features section" },
+    { "id": "footer", "type": "cmd", "run": "grep -q 'id=\"footer\"' index.html", "expect_exit": 0, "weight": 1, "describe": "has #footer section" },
+    { "id": "nav-anchors", "type": "cmd", "run": "grep -qE 'href=\"#(hero|features|footer)\"' index.html", "expect_exit": 0, "weight": 1, "describe": "nav links jump to the sections" },
+    { "id": "quality", "type": "judge", "files": ["index.html"],
+      "criterion": "A modern, responsive, self-contained landing page with a nav, a hero (headline + CTA), a features section with 3+ features, and a footer. Believable real copy, cohesive styling, no lorem ipsum.",
+      "rubric": "1.0 = polished, responsive, real copy, clear hierarchy; 0.5 = present but plain or has lorem ipsum; 0.0 = broken or missing major sections.",
+      "weight": 2, "describe": "tasteful, responsive, real-copy landing page" }
+  ]
+}

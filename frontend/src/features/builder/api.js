@@ -63,13 +63,15 @@ export function exportUrl(id) {
 }
 
 // generate streams the build for a project, calling onEvent per parsed SSE frame.
-export async function generate(id, prompt, onEvent, signal, history, model) {
+// consoleErrors are runtime errors captured from the live preview; the backend
+// folds them into the prompt so the model can fix them without running anything.
+export async function generate(id, prompt, onEvent, signal, history, model, consoleErrors) {
   let res;
   try {
     res = await fetch(`${BASE}/builder/projects/${id}/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ prompt, history: history || [], model }),
+      body: JSON.stringify({ prompt, history: history || [], model, console_errors: consoleErrors || [] }),
       signal,
     });
   } catch (e) {

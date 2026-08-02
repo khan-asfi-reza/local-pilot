@@ -1,0 +1,24 @@
+{
+  "name": "social-django-drf-react",
+  "difficulty": 5,
+  "max_steps": 80,
+  "grounding": { "action": "create", "explicit_targets": ["requirements.txt"] },
+  "checks": [
+    { "id": "manage", "type": "cmd", "run": "find . -name manage.py -not -path './.venv/*' | grep -q .", "expect_exit": 0, "weight": 1,
+      "describe": "a Django manage.py exists somewhere in the project" },
+    { "id": "reqs", "type": "file_exists", "path": "requirements.txt", "weight": 1, "describe": "requirements.txt exists" },
+    { "id": "deps", "type": "cmd",
+      "run": "python3 -m venv .venv && .venv/bin/pip -q install -r requirements.txt",
+      "expect_exit": 0, "weight": 1, "describe": "backend deps install cleanly" },
+    { "id": "django-tests", "type": "cmd",
+      "run": "MP=$(find . -name manage.py -not -path './.venv/*' | head -1); cd \"$(dirname \"$MP\")\" && \"$OLDPWD/.venv/bin/python\" manage.py test",
+      "expect_exit": 0, "weight": 5,
+      "describe": "the DRF test suite (register/login/post/follow/feed) passes" },
+    { "id": "drf-used", "type": "cmd", "run": "grep -qri rest_framework . --include=*.py --exclude-dir=.venv", "expect_exit": 0, "weight": 1,
+      "describe": "the project code uses Django REST Framework" },
+    { "id": "frontend", "type": "judge", "files": ["frontend/index.html", "frontend/src/App.jsx"],
+      "criterion": "A React frontend with register/login forms, a create-post box, and a feed view, wired to the API using the auth token.",
+      "rubric": "1.0 = all three (auth, create post, feed) present and wired; 0.5 = some present; 0.0 = missing or not React.",
+      "weight": 2, "describe": "React frontend with auth, posting, and feed" }
+  ]
+}

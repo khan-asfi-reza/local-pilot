@@ -34,6 +34,7 @@ func NewRegistry(skillNames []string) *Registry {
 	add(searchTool())
 	add(listDirTool())
 	add(readFileTool())
+	add(readDocumentTool())
 	add(writeFileTool())
 	add(editFileTool())
 	add(shellRunTool())

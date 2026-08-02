@@ -1,0 +1,14 @@
+{
+  "name": "palindrome-js",
+  "difficulty": 2,
+  "max_steps": 18,
+  "grounding": { "action": "create", "explicit_targets": ["palindrome.js", "palindrome.test.js"] },
+  "checks": [
+    { "id": "mod-exists", "type": "file_exists", "path": "palindrome.js", "weight": 1, "describe": "palindrome.js exists" },
+    { "id": "test-exists", "type": "file_exists", "path": "palindrome.test.js", "weight": 1, "describe": "palindrome.test.js exists" },
+    { "id": "correct", "type": "cmd",
+      "run": "node -e \"const {isPalindrome}=require('./palindrome.js'); if(isPalindrome('A man a plan a canal Panama') && !isPalindrome('hello')) console.log('ok'); else process.exit(1)\"",
+      "expect_exit": 0, "stdout_contains": "ok", "weight": 4,
+      "describe": "isPalindrome is correct and CommonJS-exported" }
+  ]
+}

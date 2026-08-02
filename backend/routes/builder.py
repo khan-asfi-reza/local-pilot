@@ -41,6 +41,35 @@ _BUILDER_INSTRUCTION = (
 )
 
 
+_MAX_ERRORS = 8
+_MAX_ERROR_CHARS = 600
+
+
+def _console_block(errors: list[Any]) -> str:
+    """Render preview runtime errors as a prompt block, newest last."""
+    lines: list[str] = []
+    for e in errors[-_MAX_ERRORS:]:
+        if not isinstance(e, dict):
+            continue
+        text = str(e.get("text", "")).strip()
+        if not text:
+            continue
+        if len(text) > _MAX_ERROR_CHARS:
+            text = text[:_MAX_ERROR_CHARS] + " …(truncated)"
+        count = e.get("count") or 1
+        level = e.get("level", "error")
+        prefix = f"[{level}]" + (f" x{count}" if count > 1 else "")
+        lines.append(f"{prefix} {text}")
+    if not lines:
+        return ""
+    return (
+        "\n\nThe running preview reported these runtime errors (captured from the "
+        "browser console — you cannot and must not run the app yourself; this IS "
+        "the run output). Read the files they point at and fix the cause:\n"
+        + "\n".join(lines)
+    )
+
+
 @router.on_event("startup")
 def _startup() -> None:
     # Best-effort: bring the gateway up so previews resolve immediately.
@@ -170,7 +199,8 @@ async def generate(pid: str, request: Request) -> StreamingResponse:
         content = entry.get("content", "")
         if role in ("user", "assistant") and content:
             messages.append({"role": role, "content": content})
-    messages.append({"role": "user", "content": f"{_BUILDER_INSTRUCTION}\n\n{prompt}"})
+    console_block = _console_block(body.get("console_errors") or [])
+    messages.append({"role": "user", "content": f"{_BUILDER_INSTRUCTION}\n\n{prompt}{console_block}"})
 
     # Clean conversation for the persisted build log (no instruction prefix).
     log_convo = [

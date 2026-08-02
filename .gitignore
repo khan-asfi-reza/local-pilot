@@ -41,3 +41,6 @@ builder/node_modules
 builder/dist
 builder/.vite
 builder_gateway/node_modules
+
+# Local per-worktree agent memory (never committed)
+.pilot/

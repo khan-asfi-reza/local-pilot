@@ -1,0 +1,20 @@
+{
+  "name": "notes-fastapi-db",
+  "difficulty": 4,
+  "max_steps": 40,
+  "grounding": { "action": "create", "explicit_targets": ["backend/main.py", "backend/requirements.txt", "backend/test_api.py"] },
+  "checks": [
+    { "id": "files", "type": "cmd",
+      "run": "test -f backend/main.py && test -f backend/requirements.txt && test -f backend/test_api.py",
+      "expect_exit": 0, "weight": 1, "describe": "all required files exist" },
+    { "id": "deps", "type": "cmd",
+      "run": "python3 -m venv .venv && .venv/bin/pip -q install -r backend/requirements.txt",
+      "expect_exit": 0, "weight": 1, "describe": "backend deps install cleanly" },
+    { "id": "persist-tests", "type": "cmd",
+      "run": ".venv/bin/python backend/test_api.py",
+      "expect_exit": 0, "stdout_contains": "all api tests passed", "weight": 5,
+      "describe": "notes persist across a simulated restart" },
+    { "id": "uses-sqlite", "type": "cmd", "run": "grep -q sqlite3 backend/main.py", "expect_exit": 0, "weight": 1,
+      "describe": "uses the sqlite3 standard library" }
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "name": "rename-var",
+  "difficulty": 1,
+  "seed": "fixtures/rename-var",
+  "max_steps": 10,
+  "grounding": { "action": "edit", "explicit_targets": ["greet.py"], "forbid_new_files": true },
+  "checks": [
+    { "id": "uses-greeting", "type": "cmd", "run": "grep -q 'greeting' greet.py", "expect_exit": 0, "weight": 2,
+      "describe": "greet.py must use the new name 'greeting'" },
+    { "id": "no-old-name", "type": "cmd", "run": "! grep -qw 'msg' greet.py", "expect_exit": 0, "weight": 2,
+      "describe": "the old variable name 'msg' must be gone" },
+    { "id": "runs-correctly", "type": "cmd", "run": "python3 -c \"import greet; assert greet.greet('World') == 'Hello, World!'; print('ok')\"", "expect_exit": 0, "stdout_contains": "ok", "weight": 3,
+      "describe": "greet('World') still returns 'Hello, World!'" },
+    { "id": "no-new-files", "type": "mutated_only", "allow": ["greet.py"], "weight": 2, "hard": true,
+      "describe": "ONLY greet.py may change" }
+  ]
+}

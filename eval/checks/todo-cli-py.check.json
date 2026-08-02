@@ -1,0 +1,21 @@
+{
+  "name": "todo-cli-py",
+  "difficulty": 3,
+  "max_steps": 22,
+  "grounding": { "action": "create", "explicit_targets": ["todo.py"] },
+  "checks": [
+    { "id": "exists", "type": "file_exists", "path": "todo.py", "weight": 1, "describe": "todo.py exists" },
+    { "id": "add-and-list", "type": "cmd",
+      "run": "python3 todo.py add 'buy milk' >/dev/null 2>&1 && python3 todo.py list",
+      "expect_exit": 0, "stdout_contains": "buy milk", "weight": 3,
+      "describe": "add then list shows the task" },
+    { "id": "persists", "type": "cmd",
+      "run": "python3 todo.py add 'walk dog' >/dev/null 2>&1 && test -f todos.json && python3 todo.py list | grep -q 'walk dog'",
+      "expect_exit": 0, "weight": 2,
+      "describe": "tasks persist to todos.json across runs" },
+    { "id": "done-marks", "type": "cmd",
+      "run": "python3 todo.py done 1 >/dev/null 2>&1 && python3 todo.py list | grep -qE '\\[x\\].*buy milk|buy milk.*(done|x)'",
+      "expect_exit": 0, "weight": 2,
+      "describe": "done marks a task complete" }
+  ]
+}

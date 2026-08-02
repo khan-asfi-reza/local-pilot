@@ -1,0 +1,41 @@
+
+prompt = init_prompt()
+
+memory = load_memory()
+
+agent_md = load_agent_md()
+
+states = load_states()
+
+if not (memory | agent_md | states) then
+  create(memory, agent_md, states)
+end if
+
+do agent_llm_call:
+
+  llm_attach(memory, agent_md, states) + prompt
+
+  if states.agrees with prompt & memory.agrees with prompt and agent_md.agrees with prompt:
+    continue
+
+  else
+    agent_md, states, memory = fix(agent_md, states, memory)
+  end if
+
+end agent_llm_call
+
+if states.project_initialized is false:
+  do agent_llm_call:
+    llm.initiate_initialize_project()
+  end agent_llm_call
+
+end if
+
+sub_tasks = llm_enrich_generate_sub_tasks()
+
+for sub_task in sub_tasks
+  async exec sub_task
+end for
+
+
+

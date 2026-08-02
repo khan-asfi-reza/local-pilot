@@ -21,17 +21,33 @@ export function useBuilder() {
   // Runtime console errors forwarded from the preview iframe (postMessage bridge).
   const [consoleErrors, setConsoleErrors] = useState([]);
   const abortRef = useRef(null);
+  // Mirror of consoleErrors so send() can attach the current errors without
+  // waiting for a re-render.
+  const errorsRef = useRef([]);
+
+  const commitErrors = useCallback((next) => {
+    errorsRef.current = next;
+    setConsoleErrors(next);
+  }, []);
 
   useEffect(() => {
     const onMsg = (e) => {
       const d = e.data;
       if (!d || d.source !== 'builder-preview') return;
-      setConsoleErrors((prev) => [...prev.slice(-49), { id: uid('e'), level: d.level, text: d.text }]);
+      const prev = errorsRef.current;
+      const last = prev[prev.length - 1];
+      // React/Vite re-log the same error on every re-render — collapse repeats
+      // into a count so the panel (and the model's context) stays readable.
+      if (last && last.text === d.text && last.level === d.level) {
+        commitErrors([...prev.slice(0, -1), { ...last, count: last.count + 1 }]);
+        return;
+      }
+      commitErrors([...prev.slice(-49), { id: uid('e'), level: d.level, text: d.text, count: 1 }]);
     };
     window.addEventListener('message', onMsg);
     return () => window.removeEventListener('message', onMsg);
-  }, []);
-  const clearConsole = useCallback(() => setConsoleErrors([]), []);
+  }, [commitErrors]);
+  const clearConsole = useCallback(() => commitErrors([]), [commitErrors]);
 
   const loadProjects = useCallback(async () => {
     try {
@@ -126,10 +142,20 @@ export function useBuilder() {
     [activeId, loadProjects],
   );
 
+  const refreshFiles = useCallback(async () => {
+    if (!activeId) return;
+    try {
+      const p = await api.getProject(activeId);
+      setFiles(p.files || []);
+    } catch {
+      /* ignore */
+    }
+  }, [activeId]);
+
   const openProject = useCallback(async (id) => {
     setActiveId(id);
     setMessages([]);
-    setConsoleErrors([]);
+    commitErrors([]);
     setError(null);
     try {
       const p = await api.getProject(id);
@@ -141,7 +167,7 @@ export function useBuilder() {
     } catch (e) {
       setError(String(e));
     }
-  }, []);
+  }, [commitErrors]);
 
   // createBlank makes an empty project and returns its id; the caller navigates
   // to /builder/<id> and the URL drives openProject.
@@ -182,7 +208,10 @@ export function useBuilder() {
         api.renameProject(activeId, nm).then(loadProjects).catch(() => {});
       }
       setMessages((prev) => [...prev, { id: uid('u'), role: 'user', content: prompt }]);
-      setConsoleErrors([]);
+      // Hand the preview's runtime errors to the model as context — it never
+      // runs the app itself, so this is the only way it learns what broke.
+      const attached = errorsRef.current.map((e) => ({ level: e.level, text: e.text, count: e.count || 1 }));
+      commitErrors([]);
       setBusy(true);
       setError(null);
       const controller = new AbortController();
@@ -190,12 +219,22 @@ export function useBuilder() {
       const history = messages
         .filter((m) => m.role === 'user' || (m.role === 'assistant' && m.content))
         .map((m) => ({ role: m.role, content: m.content }));
+      // Files the agent writes should appear in the Source tree while it builds,
+      // not only when the run ends. Debounced so a burst of writes is one fetch.
+      let filesTimer = null;
+      const bumpFiles = () => {
+        clearTimeout(filesTimer);
+        filesTimer = setTimeout(() => {
+          api.getProject(activeId).then((p) => setFiles(p.files || [])).catch(() => {});
+        }, 400);
+      };
       try {
         await api.generate(
           activeId,
           prompt,
           (ev) => {
             handleEvent(ev);
+            if (ev.type === 'tool_result') bumpFiles();
             if (ev.type === 'done') {
               setBusy(false);
               abortRef.current = null;
@@ -204,16 +243,18 @@ export function useBuilder() {
           controller.signal,
           history,
           currentModel || defaultModel,
+          attached,
         );
       } catch (e) {
         if (e?.name !== 'AbortError') setError(String(e));
       }
+      clearTimeout(filesTimer);
       setBusy(false);
       abortRef.current = null;
       // Refresh the file list after a build.
       api.getProject(activeId).then((p) => setFiles(p.files || [])).catch(() => {});
     },
-    [activeId, activeName, loadProjects, messages, handleEvent, currentModel, defaultModel],
+    [activeId, activeName, loadProjects, messages, handleEvent, currentModel, defaultModel, commitErrors],
   );
 
   const stop = useCallback(() => {
@@ -228,7 +269,7 @@ export function useBuilder() {
 
   const run = useCallback(async () => {
     if (!activeId) return;
-    setConsoleErrors([]);
+    commitErrors([]);
     try {
       const { url } = await api.runProject(activeId);
       // Force the iframe to reload by re-setting the URL with a cache-key.
@@ -236,12 +277,12 @@ export function useBuilder() {
     } catch (e) {
       setError(String(e));
     }
-  }, [activeId]);
+  }, [activeId, commitErrors]);
 
   return {
     projects, activeId, activeName, previewUrl, files, messages, busy, error,
     models, defaultModel, currentModel, setCurrentModel, consoleErrors, clearConsole,
     loadProjects, openProject, createBlank, closeProject, removeProject, rename,
-    send, stop, readSource, saveSource, run, exportUrl: api.exportUrl,
+    send, stop, readSource, saveSource, run, refreshFiles, exportUrl: api.exportUrl,
   };
 }
