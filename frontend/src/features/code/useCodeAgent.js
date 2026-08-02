@@ -10,6 +10,11 @@ export function useCodeAgent(onFileChange) {
   // In ask mode the run pauses on a mutating action; pendingConfirm holds the
   // details ({id, tool, summary, diff}) until the user approves or rejects.
   const [pendingConfirm, setPendingConfirm] = useState(null);
+  // The project's saved sessions (newest first) and the active one, for the
+  // history switcher. sessionIdRef mirrors sessionId so the streaming callbacks
+  // read the current id without going stale.
+  const [sessions, setSessions] = useState([]);
+  const [sessionId, setSessionId] = useState(null);
   const abortRef = useRef(null);
   const messagesRef = useRef([]);
   const sessionIdRef = useRef(null); // current .pilot session id (shared w/ terminal)
@@ -18,6 +23,23 @@ export function useCodeAgent(onFileChange) {
 
   const syncRef = useCallback((msgs) => {
     messagesRef.current = msgs;
+  }, []);
+
+  // setSid keeps the ref (read by streaming callbacks) and the state (read by
+  // the UI) in lockstep.
+  const setSid = useCallback((id) => {
+    sessionIdRef.current = id;
+    setSessionId(id);
+  }, []);
+
+  const refreshSessions = useCallback(async (root) => {
+    if (!root) return;
+    try {
+      const { sessions: list } = await code.listSessions(root);
+      setSessions(list || []);
+    } catch {
+      setSessions([]);
+    }
   }, []);
 
   const appendText = useCallback((text) => {
@@ -84,7 +106,7 @@ export function useCodeAgent(onFileChange) {
 
   const handleEvent = useCallback(
     (ev) => {
-      if (ev.type === 'session') sessionIdRef.current = ev.id;
+      if (ev.type === 'session') setSid(ev.id);
       else if (ev.type === 'text') appendText(ev.content || '');
       else if (ev.type === 'reasoning') appendReasoning(ev.content || '');
       else if (ev.type === 'tool_call') startTool(ev);
@@ -93,7 +115,7 @@ export function useCodeAgent(onFileChange) {
         setPendingConfirm({ id: ev.id, tool: ev.tool, summary: ev.summary, diff: ev.diff });
       } else if (ev.type === 'error') pushError(ev.message || 'Something went wrong');
     },
-    [appendText, appendReasoning, startTool, finishTool, pushError],
+    [appendText, appendReasoning, startTool, finishTool, pushError, setSid],
   );
 
   // respondConfirm answers the current ask-mode prompt. The paused run then
@@ -120,7 +142,7 @@ export function useCodeAgent(onFileChange) {
       abortRef.current = controller;
 
       // Only the real conversation (user/assistant text) goes to the model and
-      // the saved session — not the transient tool cards.
+      // the saved session, not the transient tool cards.
       const outgoing = messagesRef.current
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => ({ role: m.role, content: m.content || '' }));
@@ -132,6 +154,7 @@ export function useCodeAgent(onFileChange) {
             setBusy(false);
             setPendingConfirm(null);
             abortRef.current = null;
+            refreshSessions(root); // the run persisted a session; refresh the list/titles
             onDone?.();
           }
         }, controller.signal, mode, sessionIdRef.current);
@@ -145,7 +168,7 @@ export function useCodeAgent(onFileChange) {
         onDone?.();
       }
     },
-    [handleEvent, pushError, syncRef],
+    [handleEvent, pushError, syncRef, refreshSessions],
   );
 
   const stop = useCallback(() => {
@@ -156,40 +179,98 @@ export function useCodeAgent(onFileChange) {
     setPendingConfirm(null);
   }, []);
 
+  // load pulls a stored session into the panel (used by resume + switch).
+  const load = useCallback(
+    async (root, id) => {
+      const s = await code.loadSession(root, id);
+      const restored = (s.messages || [])
+        .filter((m) => m.role === 'user' || m.role === 'assistant')
+        .map((m) => ({ id: uid(m.role[0]), role: m.role, content: m.content || '', reasoning: '' }));
+      setSid(s.id);
+      setMessages(restored);
+      syncRef(restored);
+      setPendingConfirm(null);
+    },
+    [syncRef, setSid],
+  );
+
   // resume restores the most recent session for a project (on open/reload), so
-  // the conversation survives and matches what the terminal would show.
+  // the conversation survives and matches what the terminal would show. It also
+  // seeds the history list.
   const resume = useCallback(
     async (root) => {
       if (!root) return;
       try {
         const { sessions: list } = await code.listSessions(root);
+        setSessions(list || []);
         if (!list?.length) {
-          sessionIdRef.current = null;
+          setSid(null);
           setMessages([]);
           syncRef([]);
           return;
         }
-        const s = await code.loadSession(root, list[0].id);
-        const restored = (s.messages || [])
-          .filter((m) => m.role === 'user' || m.role === 'assistant')
-          .map((m) => ({ id: uid(m.role[0]), role: m.role, content: m.content || '', reasoning: '' }));
-        sessionIdRef.current = s.id;
-        setMessages(restored);
-        syncRef(restored);
+        await load(root, list[0].id);
       } catch {
         /* no sessions yet */
       }
     },
-    [syncRef],
+    [syncRef, setSid, load],
+  );
+
+  // switchSession loads a specific past session from the history menu.
+  const switchSession = useCallback(
+    async (root, id) => {
+      if (!root || !id || id === sessionIdRef.current) return;
+      try {
+        await load(root, id);
+      } catch {
+        /* session vanished; leave the panel as-is */
+      }
+    },
+    [load],
+  );
+
+  // removeSession deletes a stored session; if it was the active one, the panel
+  // drops to a fresh chat.
+  const removeSession = useCallback(
+    async (root, id) => {
+      if (!root || !id) return;
+      try {
+        await code.deleteSession(root, id);
+      } catch {
+        /* ignore */
+      }
+      setSessions((prev) => prev.filter((s) => s.id !== id));
+      if (sessionIdRef.current === id) {
+        setSid(null);
+        setMessages([]);
+        syncRef([]);
+        setPendingConfirm(null);
+      }
+    },
+    [syncRef, setSid],
   );
 
   // newSession clears the panel and starts a fresh session id.
   const newSession = useCallback(() => {
-    sessionIdRef.current = null;
+    setSid(null);
     setMessages([]);
     syncRef([]);
     setPendingConfirm(null);
-  }, [syncRef]);
+  }, [syncRef, setSid]);
 
-  return { messages, busy, send, stop, pendingConfirm, respondConfirm, resume, newSession };
+  return {
+    messages,
+    busy,
+    send,
+    stop,
+    pendingConfirm,
+    respondConfirm,
+    resume,
+    newSession,
+    sessions,
+    sessionId,
+    switchSession,
+    removeSession,
+  };
 }

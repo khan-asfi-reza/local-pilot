@@ -207,11 +207,15 @@ func main() {
 			}
 		}
 		agentReq := agent.Request{
-			Messages:     req.Messages,
-			Allowed:      allowed,
-			Mode:         mode,
-			WorkDir:      req.WorkingDirectory,
-			Sandbox:      sandbox,
+			Messages: req.Messages,
+			Allowed:  allowed,
+			Mode:     mode,
+			WorkDir:  req.WorkingDirectory,
+			Sandbox:  sandbox,
+			// The non-full-access path is the conversational chat path (web chat,
+			// Telegram no-project): it has only the sandboxed code_run + web_search
+			// tools, so it answers inline and must not act like a project agent.
+			Chat:         !req.FullAccess,
 			InjectSkills: req.InjectSkills,
 		}
 		// Switch to the request's model (falling back to the default) and run.

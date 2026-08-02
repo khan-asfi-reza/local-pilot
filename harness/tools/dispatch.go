@@ -41,6 +41,7 @@ func NewRegistry(skillNames []string) *Registry {
 	add(codeRunTool())
 	add(npmInstallTool())
 	add(webSearchTool())
+	add(searchImagesTool())
 	if len(skillNames) > 0 {
 		add(loadSkillTool(skillNames))
 	}
@@ -122,7 +123,7 @@ func (r *Registry) Describe(allowed []string, includeMutating bool) (docs string
 func (r *Registry) Dispatch(tc model.ToolCall, allowed []string, mode string, env Env, confirm ConfirmFunc) (string, *events.Diff) {
 	name := tc.Function.Name
 	if allow := toSet(allowed); len(allow) > 0 && !allow[name] {
-		return errString("This tool is not allowed for this request."), nil
+		return errString(fmt.Sprintf("The tool %q does not exist in this task. Do NOT try it again. The ONLY tools available are: %s. Use one of those, or if the work is done, reply to the user.", name, strings.Join(allowed, ", "))), nil
 	}
 	tool := r.tools[name]
 	if tool == nil {

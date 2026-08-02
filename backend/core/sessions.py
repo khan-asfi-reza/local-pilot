@@ -80,6 +80,15 @@ def load(root: str, sid: str) -> dict | None:
         return None
 
 
+def delete(root: str, sid: str) -> bool:
+    """Remove a session file. Returns False if it was missing or invalid."""
+    try:
+        os.remove(_safe_path(root, sid))
+        return True
+    except (OSError, ValueError):
+        return False
+
+
 def save(root: str, sid: str, messages: list[dict], model: str | None = None, mode: str = "ask") -> dict:
     """Write (or update) a session file, matching the terminal's schema."""
     path = _safe_path(root, sid)

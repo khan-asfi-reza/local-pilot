@@ -82,6 +82,8 @@ func helpText() string {
 		{"models add <model> [--host URL]", "add a model (local, or from another ollama server)"},
 		{"models list", "show configured models, their server, and the default"},
 		{"models set-default", "pick the default from your configured models"},
+		{"skill add <source>", "install a local skill (owner/repo[/path], git URL, or path)"},
+		{"skill list", "list installed local skills"},
 		{"context [tokens|auto]", "show or set the ollama context window (restarts ollama)"},
 		{"code [--dir DIR]", "open the interactive coding agent"},
 		{"run --dir DIR --task \"…\"", "run one task headless (--task-file, --max-steps, --format)"},

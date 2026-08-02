@@ -1,7 +1,5 @@
-import asyncio
 import json
 import os
-import uuid
 from typing import Any, AsyncIterator
 
 import httpx
@@ -10,6 +8,7 @@ from fastapi.responses import StreamingResponse
 
 from core.database import init_db
 from core import projects, sessions
+from services.agent_runner import run_full_access
 from services.harness_client import HARNESS_URL
 
 router = APIRouter(prefix="/code", dependencies=[])
@@ -145,49 +144,11 @@ async def code_agent(request: Request) -> StreamingResponse:
         raise HTTPException(status_code=400, detail="not a directory")
 
     async def event_stream() -> AsyncIterator[str]:
-        # Tell the client the session id first, so it persists it for follow-ups.
-        yield f"event: session\ndata: {json.dumps({'type': 'session', 'id': sid})}\n\n"
-        assistant_parts: list[str] = []
-        try:
-            payload = {
-                "messages": messages,
-                "working_directory": resolved_root,
-                "full_access": True,
-            }
-            if model:
-                payload["model"] = model
-            if mode:
-                payload["mode"] = mode
-            async with httpx.AsyncClient(timeout=None) as client:
-                async with client.stream("POST", HARNESS_URL, json=payload) as resp:
-                    resp.raise_for_status()
-                    async for line in resp.aiter_lines():
-                        if not line.strip():
-                            continue
-                        event = json.loads(line)
-                        etype = event.get("type", "text")
-                        if etype == "text":
-                            assistant_parts.append(event.get("content", ""))
-                        yield f"event: {etype}\ndata: {json.dumps(event)}\n\n"
-                        if etype in {"done", "error"}:
-                            break
-        except asyncio.CancelledError:
-            return
-        except Exception as exc:
-            yield f"event: error\ndata: {json.dumps({'type': 'error', 'message': str(exc)})}\n\n"
-        finally:
-            # Persist the conversation to <root>/.pilot/sessions/<id>.json (same
-            # store the terminal uses), so it survives reload and either tool can
-            # resume it.
-            convo = list(messages)
-            answer = "".join(assistant_parts).strip()
-            if answer:
-                convo.append({"role": "assistant", "content": answer})
-            if convo:
-                try:
-                    sessions.save(resolved_root, sid, convo, model=model, mode=mode)
-                except Exception:
-                    pass
+        # run_full_access streams the harness events (session first) and persists
+        # the conversation to <root>/.pilot/sessions/<id>.json when it finishes.
+        async for event in run_full_access(resolved_root, messages, model=model, mode=mode, session_id=sid):
+            etype = event.get("type", "text")
+            yield f"event: {etype}\ndata: {json.dumps(event)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
@@ -204,6 +165,12 @@ def code_session(root: str, id: str) -> dict[str, Any]:
     if not s:
         raise HTTPException(status_code=404, detail="session not found")
     return s
+
+
+@router.delete("/session")
+def delete_session(root: str, id: str) -> dict[str, Any]:
+    """Delete a project's conversation session (shared with the terminal)."""
+    return {"ok": sessions.delete(os.path.realpath(root), id)}
 
 
 @router.post("/agent/confirm")

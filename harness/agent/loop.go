@@ -51,25 +51,35 @@ func (a *Agent) Run(ctx context.Context, req Request, emit func(events.Event), c
 	// (e.g. the App Builder forces "app-builder"), then the detected
 	// language/framework skills. All injected into the system prompt, never shown
 	// as a loaded skill.
-	var guides []string
-	for _, name := range req.InjectSkills {
-		if body := a.skills.bodies[name]; body != "" {
-			guides = append(guides, body)
+	// Chat (no-project) mode skips skill detection and all the coding scaffolding.
+	var guidance string
+	if !req.Chat {
+		var guides []string
+		for _, name := range req.InjectSkills {
+			if body := a.skills.bodies[name]; body != "" {
+				guides = append(guides, body)
+			}
 		}
+		if d := detectInternalSkills(req.WorkDir, req.Messages, a.skills); d != "" {
+			guides = append(guides, d)
+		}
+		guidance = strings.Join(guides, "\n\n")
 	}
-	if d := detectInternalSkills(req.WorkDir, req.Messages, a.skills); d != "" {
-		guides = append(guides, d)
-	}
-	guidance := strings.Join(guides, "\n\n")
 
 	if a.router.ToolMode() == model.ToolModeNative {
 		defs := a.reg.Defs(req.Allowed, includeMutating)
 		system := buildSystem(a.prompt, model.ToolModeNative, agentsMD, a.skills.catalog, repoMap, "", req.Mode, guidance)
+		if req.Chat {
+			system = buildChatSystem(a.prompt, model.ToolModeNative, "")
+		}
 		return a.runNative(ctx, req, emit, confirm, system, defs, env, conv)
 	}
 
 	toolDocs, names := a.reg.Describe(req.Allowed, includeMutating)
 	system := buildSystem(a.prompt, model.ToolModeJSON, agentsMD, a.skills.catalog, repoMap, toolDocs, req.Mode, guidance)
+	if req.Chat {
+		system = buildChatSystem(a.prompt, model.ToolModeJSON, toolDocs)
+	}
 	schema := actionSchema(names)
 	return a.runJSON(ctx, req, emit, confirm, system, schema, env, conv)
 }
@@ -78,6 +88,7 @@ func (a *Agent) Run(ctx context.Context, req Request, emit func(events.Event), c
 // dispatched and fed back as role:"tool" messages; a turn with none is the final.
 func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Event), confirm tools.ConfirmFunc, system string, defs []model.ToolDef, env tools.Env, conv []model.Message) []model.Message {
 	seen := map[string]int{}
+	repeatNudged := map[string]bool{}
 	totalTokens := 0
 	debugInjected := false
 	serveInjected := false
@@ -115,8 +126,9 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 				text = strings.TrimSpace(msg.Reasoning)
 			}
 			// Nudge once before accepting the finish, but only if the turn actually
-			// did tool work — a plain answer or chat reply finishes immediately.
-			if !finishNudged && usedTools {
+			// did tool work — a plain answer or chat reply finishes immediately. In
+			// chat mode there is no project to verify, so never nudge.
+			if !req.Chat && !finishNudged && usedTools {
 				finishNudged = true
 				conv = append(conv, model.Message{Role: "assistant", Content: text})
 				conv = append(conv, model.Message{Role: "user", Content: "Before finishing, verify completeness: list_dir to confirm EVERY file the task asked for actually exists, and confirm each check (test/build/curl) truly returned the expected result, not just exited. If any requested file is missing or any result is wrong, keep working with tools. Only if everything is genuinely done and verified, reply with your final summary."})
@@ -137,15 +149,30 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 			result, diff := a.reg.Dispatch(tc, req.Allowed, req.Mode, env, confirm)
 			emit(events.ToolResult(tc.Function.Name, shortResult(result), result, diff))
 
-			key := tc.Function.Name + "|" + tc.Function.Arguments + "|" + shortResult(result)
-			if seen[key]++; seen[key] >= 3 {
-				emit(events.Error("stopping: the assistant keeps repeating actions with no new result. Rephrase the task or break it into smaller steps."))
-				return conv
-			}
-
 			conv = append(conv, model.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: result})
 			if isFailure(result) {
 				anyFailure = true
+			}
+
+			// Graceful repeat handling: an identical call with an identical result
+			// gives no new information (e.g. re-reading a file already read to
+			// "verify"). Nudge the model to finish rather than hard-erroring — the
+			// work is usually already done. Only force a clean finish if it keeps
+			// looping past the nudge, and never surface it as an error.
+			key := tc.Function.Name + "|" + tc.Function.Arguments + "|" + shortResult(result)
+			seen[key]++
+			if seen[key] == 2 && !repeatNudged[key] {
+				repeatNudged[key] = true
+				conv = append(conv, model.Message{Role: "user", Content: "You just repeated the same action and got the same result — that gives no new information. If the change is already made and looks correct, STOP and reply with a one- or two-sentence summary now. Otherwise take a genuinely different step; do not read or run the same thing again."})
+			} else if seen[key] >= 4 {
+				summary := strings.TrimSpace(msg.Content)
+				if summary == "" {
+					summary = stuckSummary(env.WorkDir, result)
+				}
+				emit(events.Text(summary))
+				conv = append(conv, model.Message{Role: "assistant", Content: summary})
+				emit(events.Done())
+				return conv
 			}
 
 			if !serveInjected && tc.Function.Name == "shell_run" {

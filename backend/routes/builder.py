@@ -22,7 +22,22 @@ router = APIRouter(prefix="/builder")
 _BUILDER_INSTRUCTION = (
     "Build the app the user asks for, following the stack guidance in your "
     "instructions exactly. Write React components as files in the current "
-    "directory. The app to build:"
+    "directory. Three rules that are easy to get wrong, so hold to them: "
+    "(1) EVERY control must actually work — a category/filter/tab/search must "
+    "change which items render by filtering the array from state, not just "
+    "highlight the active chip; no dead buttons. "
+    "(2) Icons are lucide-react components ONLY — never use an emoji as an icon "
+    "or decoration anywhere. "
+    "(3) For ANY photo, call the search_images tool and use a url it returns in "
+    "the <img> — NEVER type or guess an image URL from memory (a hand-written "
+    "unsplash/pexels/picsum link 404s and shows a broken image), and never fake a "
+    "photo with an empty coloured box. "
+    "The dev server is ALREADY running and hot-reloads on save — never try to "
+    "build, run, serve, test, or preview the app; there is no such tool and no "
+    "need. Build exactly the subject the user asked for. Write each file once and "
+    "completely; do NOT rewrite files you already wrote to polish them (it usually "
+    "breaks them). When the files are written, reply with one short line. The app "
+    "to build:"
 )
 
 
@@ -174,7 +189,7 @@ async def generate(pid: str, request: Request) -> StreamingResponse:
             # File tools + a NARROW npm_install (no general shell): the model can add
             # packages but cannot run arbitrary commands. full_access is only to
             # enable the file tools; the explicit allowlist blocks shell_run/serve.
-            "allowed_tools": ["read_file", "write_file", "edit_file", "list_dir", "npm_install"],
+            "allowed_tools": ["read_file", "write_file", "edit_file", "list_dir", "npm_install", "search_images"],
             "inject_skills": ["app-builder"],
         }
         if model:

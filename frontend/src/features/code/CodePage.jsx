@@ -5,6 +5,8 @@ import { code } from '../../lib/api';
 import { FileTree, BrowseModal } from './FileTree';
 import { Editor } from './Editor';
 import { AgentPanel } from './AgentPanel';
+import { DiffReview } from './DiffReview';
+import { SettingsButton } from '../settings/SettingsButton';
 
 export function CodePage() {
   const navigate = useNavigate();
@@ -15,6 +17,10 @@ export function CodePage() {
   const [activePath, setActivePath] = useState(null);
   const [tree, setTree] = useState(null);
   const [browseOpen, setBrowseOpen] = useState(false);
+  // Ask-mode review: the pending confirm (bubbled up from AgentPanel) and whether
+  // its diff is showing in the center pane instead of the editor.
+  const [confirmState, setConfirmState] = useState(null); // { confirm, respond } | null
+  const [reviewOpen, setReviewOpen] = useState(false);
 
   const refreshTree = useCallback(async () => {
     if (!root) return;
@@ -150,6 +156,7 @@ export function CodePage() {
     refreshTree();
     // Reload every open tab (the agent may have edited more than the active one).
     openFiles.forEach((f) => reloadOpenFile(f.path));
+    setReviewOpen(false); // the run finished; drop back to the editor
   }, [refreshTree, openFiles, reloadOpenFile]);
 
   useEffect(() => {
@@ -159,6 +166,7 @@ export function CodePage() {
   if (!root) {
     return (
       <div className="hero-wash relative flex h-full flex-col items-center justify-center px-6">
+        <SettingsButton className="absolute right-4 top-4" />
         <div className="flex w-full max-w-md flex-col items-center text-center">
           <span className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-glow">
             <SquareCode size={30} strokeWidth={2} />
@@ -217,15 +225,31 @@ export function CodePage() {
         onProjectOpen={handleProjectOpen}
         onRefresh={refreshTree}
       />
-      <Editor
-        openFiles={openFiles}
+      {reviewOpen && confirmState ? (
+        <DiffReview
+          confirm={confirmState.confirm}
+          onApprove={(note) => confirmState.respond('approve', note)}
+          onReject={(note) => confirmState.respond('decline', note)}
+          onClose={() => setReviewOpen(false)}
+        />
+      ) : (
+        <Editor
+          openFiles={openFiles}
+          activePath={activePath}
+          onTabClick={setActivePath}
+          onChange={changeFile}
+          onSave={saveFile}
+          onClose={closeFile}
+        />
+      )}
+      <AgentPanel
+        root={root}
         activePath={activePath}
-        onTabClick={setActivePath}
-        onChange={changeFile}
-        onSave={saveFile}
-        onClose={closeFile}
+        onDone={handleAgentDone}
+        onFileChange={reloadOpenFile}
+        onConfirmChange={setConfirmState}
+        onViewDiff={() => setReviewOpen(true)}
       />
-      <AgentPanel root={root} activePath={activePath} onDone={handleAgentDone} onFileChange={reloadOpenFile} />
     </div>
   );
 }

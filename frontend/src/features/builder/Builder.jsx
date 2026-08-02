@@ -15,6 +15,7 @@ import { Reasoning } from '../../components/chat/Reasoning';
 import { FileIcon } from '../code/fileIcons';
 import { cn, humanizeModel } from '../../lib/utils';
 import { useBuilder } from './useBuilder';
+import { SettingsButton } from '../settings/SettingsButton';
 
 function ModelPicker({ models, currentModel, defaultModel, onSelect }) {
   const [open, setOpen] = useState(false);
@@ -71,9 +72,12 @@ function ProjectList({ projects, onOpen, onNew, onDelete, navigate }) {
           </span>
           <span className="text-sm font-medium">App Builder</span>
         </button>
-        <Button size="sm" onClick={onNew} className="gap-1.5">
-          <Plus size={15} /> New app
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button size="sm" onClick={onNew} className="gap-1.5">
+            <Plus size={15} /> New app
+          </Button>
+          <SettingsButton />
+        </div>
       </header>
       <div className="mx-auto max-w-4xl px-6 py-10">
         <p className="eyebrow mb-2">Your apps</p>
@@ -418,6 +422,7 @@ function ProjectView(b) {
           <div className="flex items-center gap-2">
             {busy && <span className="flex items-center gap-1 text-xs text-zinc-500"><Loader2 size={12} className="animate-spin" /> Building…</span>}
             <Button size="sm" variant="outline" className="gap-1.5" onClick={run} title="Restart preview"><Play size={14} /> Run</Button>
+            <SettingsButton />
           </div>
         </header>
 
@@ -448,7 +453,7 @@ export function Builder() {
   const b = useBuilder();
 
   // The URL is the source of truth: opening/closing a project navigates, and
-  // this effect syncs the hook to whatever project id is in the URL — so reload
+  // this effect syncs the hook to whatever project id is in the URL, so reload
   // and the back button restore the right view instead of dropping to home.
   const { openProject, closeProject, activeId } = b;
   useEffect(() => {

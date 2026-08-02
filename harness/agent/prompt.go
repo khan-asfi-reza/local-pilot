@@ -17,6 +17,8 @@ import (
 type Prompt struct {
 	Role         string            `json:"role"`
 	Rules        []string          `json:"rules"`
+	ChatRole     string            `json:"chat_role"`  // conversational (no-project) system role
+	ChatRules    []string          `json:"chat_rules"` // conversational rules
 	PlanModeNote string            `json:"plan_mode_note"`
 	JSONProtocol string            `json:"json_protocol"`
 	JSONExamples string            `json:"json_examples"`
@@ -96,6 +98,32 @@ func buildSystem(p *Prompt, toolMode, agentsMD, skillCatalog, repoMap, toolDocs,
 	return b.String()
 }
 
+// buildChatSystem assembles the conversational (no-project) system prompt: a
+// chat role and light rules, with the JSON protocol and tool docs added only in
+// the json fallback. It deliberately omits the coding rules, repo map, skill
+// catalog, and project instructions — a chat has no project to act on.
+func buildChatSystem(p *Prompt, toolMode, toolDocs string) string {
+	var b strings.Builder
+	b.WriteString(p.ChatRole)
+	if toolMode == model.ToolModeJSON && p.JSONProtocol != "" {
+		b.WriteString("\n\n")
+		b.WriteString(p.JSONProtocol)
+	}
+	if len(p.ChatRules) > 0 {
+		b.WriteString("\n\nRules:\n")
+		for _, r := range p.ChatRules {
+			b.WriteString("- ")
+			b.WriteString(r)
+			b.WriteString("\n")
+		}
+	}
+	if toolDocs != "" {
+		b.WriteString("\n\nTools you may call — ONLY if the user explicitly asks you to run something or you must look a fact up:\n")
+		b.WriteString(toolDocs)
+	}
+	return b.String()
+}
+
 // defaultPrompt is the built-in fallback, kept in sync with the shipped
 // models/prompt.json. The shipped file is the one meant to be edited; this
 // exists so the harness still runs if the file is missing.
@@ -119,6 +147,13 @@ func defaultPrompt() *Prompt {
 			"Every name you use must be imported or defined in that file, and every dependency must be declared in the project's manifest (requirements.txt, package.json, go.mod, ...) under its correct install name.",
 			"Before you finish, VERIFY the code actually RUNS, not just parses. Python: python -c \"import <module>\"; JS/TS: node <file> or npm run build; Go: go build ./...; Rust: cargo build. Read every error and fix it before finishing.",
 			"Do NOT start a long-running server (uvicorn, npm start, a dev server) with shell_run: it blocks until timeout. To prove a server works, import its module or run its tests, then give the user the exact start command.",
+		},
+		ChatRole: "You are a helpful AI assistant in a chat conversation. Answer the user's message directly, clearly, and conversationally in Markdown. This is a chat, NOT a coding project: there is no repository to work in, and you must not create, edit, or save files.",
+		ChatRules: []string{
+			"Answer the actual message. Work out what the user really wants, then respond to exactly that — never invent a different task or pretend the request was something it was not.",
+			"When the user asks for code, put the complete, correct code in a fenced code block right in your reply. Do NOT say you created, wrote, or saved a file, and never claim code is 'saved to disk' or 'in your project' — you have not touched any files and there is no project here.",
+			"Use a tool ONLY when the user explicitly asks you to run or execute something (use code_run and report the real output) or when you must look up a fact you do not know (web_search). If they say 'write it here', 'don't run it', or simply ask a question, answer directly with NO tool call.",
+			"Keep replies focused and correct; use Markdown for clarity. If you are unsure or do not know, say so honestly instead of guessing.",
 		},
 		PlanModeNote: "You are in PLAN MODE. This is read-only: the tools that create, edit, or run things are not available right now, on purpose. Your whole job this turn is to produce a PLAN, not to do the work.\n- Use only the read-only tools (search, read_file, list_dir) to investigate if needed.\n- Then reply with the plan: a numbered list of the exact files you would create or change and, briefly, what each contains.\n- Do NOT say you created, wrote, built, ran, or completed anything. Nothing has been done. You are proposing a plan for the user to approve.\n- Planning is always in scope. Never refuse to plan or say it needs a separate session.",
 		JSONProtocol: "Reply with EXACTLY ONE JSON object and nothing else, in this shape:\n{\"reasoning\": \"<one sentence: what you are doing and why>\", \"tool\": \"<a tool name below, or 'final'>\", \"arguments\": { ... }}\n- To use a tool, set \"tool\" to its name and \"arguments\" to its inputs.\n- When the task is done, set \"tool\" to \"final\" and put your reply to the user in arguments.text.",

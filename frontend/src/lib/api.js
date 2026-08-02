@@ -155,6 +155,12 @@ export const code = {
       await fetch(`${BASE}/code/session?root=${encodeURIComponent(root)}&id=${encodeURIComponent(id)}`),
     ); // { id, messages, ... }
   },
+  async deleteSession(root, id) {
+    await fetch(
+      `${BASE}/code/session?root=${encodeURIComponent(root)}&id=${encodeURIComponent(id)}`,
+      { method: 'DELETE' },
+    );
+  },
   // streamCodeAgent POSTs { root, model, messages, mode } and streams the
   // server-sent events back, calling onEvent for each parsed event
   // ({type:'text'|'reasoning'|'tool_call'|'tool_result'|'confirm'|'usage'|'done'|'error', ...}).
@@ -204,5 +210,52 @@ export const code = {
     } catch (e) {
       if (e?.name !== 'AbortError') onEvent({ type: 'error', message: String(e) });
     }
+  },
+};
+
+// profile is the owner profile used by onboarding + Settings. get() returns null
+// on failure so the onboarding gate never pops when the backend is unreachable.
+export const profile = {
+  async get() {
+    try {
+      return await json(await fetch(`${BASE}/profile`)); // { name, onboarded, telegram:{...} }
+    } catch {
+      return null;
+    }
+  },
+  async save(name) {
+    const res = await fetch(`${BASE}/profile`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    return json(res);
+  },
+};
+
+// telegram is the Settings/Connect API group: the bot token lives in the DB, and
+// linking a chat is a one-time code the bot redeems.
+export const telegram = {
+  async getSettings() {
+    return json(await fetch(`${BASE}/telegram/settings`)); // { enabled, configured, bot_username, bot_token }
+  },
+  async saveSettings({ bot_token, enabled }) {
+    const res = await fetch(`${BASE}/telegram/settings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bot_token, enabled }),
+    });
+    return json(res); // { enabled, configured, bot_username }
+  },
+  async linkStart() {
+    const res = await fetch(`${BASE}/telegram/link/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    return json(res); // { code, deep_link, expires_in }
+  },
+  async revokeLink(chatId) {
+    await fetch(`${BASE}/telegram/link/${chatId}`, { method: 'DELETE' });
   },
 };

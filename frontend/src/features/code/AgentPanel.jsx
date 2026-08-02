@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowUp, Check, ChevronDown, Sparkles, Square } from 'lucide-react';
+import { ArrowUp, Check, ChevronDown, Eye, History, Plus, Sparkles, Square, Trash2 } from 'lucide-react';
 import { listModels } from '../../lib/api';
 import { cn, humanizeModel } from '../../lib/utils';
 import { Button } from '../../components/ui/button';
 import { Markdown } from '../../components/chat/Markdown';
 import { Reasoning } from '../../components/chat/Reasoning';
 import { ToolCard } from '../../components/chat/ToolCard';
+import { SettingsButton } from '../settings/SettingsButton';
 import { Loader } from '../../components/chat/Loader';
 import { DiffView } from '../../components/chat/DiffView';
 import { useCodeAgent } from './useCodeAgent';
@@ -55,6 +56,86 @@ function ModelPicker({ models, currentModel, defaultModel, onSelect }) {
   );
 }
 
+// SessionMenu is the history switcher: start a new chat, jump to a past one, or
+// delete one. Sessions live in <root>/.pilot/sessions and are shared with the
+// terminal, so this lists both.
+function SessionMenu({ sessions, sessionId, onSelect, onDelete, onNew, disabled }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    const onDoc = (e) => ref.current && !ref.current.contains(e.target) && setOpen(false);
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-1 rounded-lg px-2 py-1 text-[13px] text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+        title="Chat history"
+      >
+        <History size={14} />
+        <ChevronDown size={13} className={cn('transition-transform', open && 'rotate-180')} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-30 mt-2 max-h-96 w-72 overflow-y-auto rounded-xl border border-zinc-800 bg-[#141416] p-1 shadow-2xl">
+          <button
+            type="button"
+            disabled={disabled}
+            onClick={() => {
+              onNew();
+              setOpen(false);
+            }}
+            className="flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-[13px] text-zinc-200 hover:bg-zinc-800 disabled:opacity-40"
+          >
+            <Plus size={14} className="text-emerald-400" /> New chat
+          </button>
+          {sessions.length > 0 && <div className="my-1 border-t border-zinc-800" />}
+          {sessions.map((s) => (
+            <div
+              key={s.id}
+              className={cn(
+                'group flex items-center gap-1 rounded-lg pr-1 hover:bg-zinc-800',
+                s.id === sessionId ? 'text-zinc-100' : 'text-zinc-400',
+              )}
+            >
+              <button
+                type="button"
+                disabled={disabled}
+                onClick={() => {
+                  onSelect(s.id);
+                  setOpen(false);
+                }}
+                className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-[13px] disabled:opacity-40"
+              >
+                {s.id === sessionId ? (
+                  <Check size={13} className="shrink-0 text-emerald-400" />
+                ) : (
+                  <span className="w-[13px] shrink-0" />
+                )}
+                <span className="truncate">{s.title || 'Untitled chat'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => onDelete(s.id)}
+                className="shrink-0 rounded p-1 text-zinc-600 opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
+                title="Delete chat"
+                aria-label="Delete chat"
+              >
+                <Trash2 size={13} />
+              </button>
+            </div>
+          ))}
+          {sessions.length === 0 && (
+            <div className="px-3 py-2 text-[12px] text-zinc-600">No saved chats yet</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function normalizeTool(m) {
   if (m.tool !== undefined) return { tool: m.tool, info: m.info, input: m.input, output: m.output, running: m.running };
   try {
@@ -67,8 +148,21 @@ function normalizeTool(m) {
   }
 }
 
-export function AgentPanel({ root, activePath, onDone, onFileChange }) {
-  const { messages, busy, send, stop, pendingConfirm, respondConfirm, resume, newSession } = useCodeAgent(onFileChange);
+export function AgentPanel({ root, activePath, onDone, onFileChange, onConfirmChange, onViewDiff }) {
+  const {
+    messages,
+    busy,
+    send,
+    stop,
+    pendingConfirm,
+    respondConfirm,
+    resume,
+    newSession,
+    sessions,
+    sessionId,
+    switchSession,
+    removeSession,
+  } = useCodeAgent(onFileChange);
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState(null);
   const [currentModel, setCurrentModel] = useState(null);
@@ -76,7 +170,6 @@ export function AgentPanel({ root, activePath, onDone, onFileChange }) {
   // 'ask' pauses the agent for approval before each file edit or command;
   // 'auto' applies changes without asking.
   const [mode, setMode] = useState('ask');
-  const [feedback, setFeedback] = useState('');
   const endRef = useRef(null);
   const scrollRef = useRef(null);
   const atBottomRef = useRef(true);
@@ -97,6 +190,12 @@ export function AgentPanel({ root, activePath, onDone, onFileChange }) {
     if (root) resume(root);
   }, [root, resume]);
 
+  // Bubble the pending confirm (and its responder) up to CodePage, so the full
+  // diff + Approve/Reject can render in the center pane, not just this column.
+  useEffect(() => {
+    onConfirmChange?.(pendingConfirm ? { confirm: pendingConfirm, respond: respondConfirm } : null);
+  }, [pendingConfirm, respondConfirm, onConfirmChange]);
+
   const onScroll = () => {
     const el = scrollRef.current;
     if (el) atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
@@ -116,10 +215,7 @@ export function AgentPanel({ root, activePath, onDone, onFileChange }) {
   };
 
   const approve = () => respondConfirm('approve');
-  const reject = () => {
-    respondConfirm('decline', feedback.trim());
-    setFeedback('');
-  };
+  const reject = () => respondConfirm('decline');
 
   const last = messages[messages.length - 1];
   const waiting = busy && !(last && last.role === 'assistant' && (last.content || last.reasoning));
@@ -129,15 +225,26 @@ export function AgentPanel({ root, activePath, onDone, onFileChange }) {
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-zinc-800 px-3">
         <Sparkles size={15} className="text-emerald-400" />
         <span className="text-sm font-medium text-zinc-300">Agent</span>
-        <button
-          type="button"
-          onClick={newSession}
-          disabled={busy}
-          className="ml-auto rounded-lg px-2 py-1 text-[13px] text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
-          title="New chat"
-        >
-          New
-        </button>
+        <div className="ml-auto flex items-center gap-1">
+          <SessionMenu
+            sessions={sessions}
+            sessionId={sessionId}
+            onSelect={(id) => switchSession(root, id)}
+            onDelete={(id) => removeSession(root, id)}
+            onNew={newSession}
+            disabled={busy}
+          />
+          <button
+            type="button"
+            onClick={newSession}
+            disabled={busy}
+            className="rounded-lg px-2 py-1 text-[13px] text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
+            title="New chat"
+          >
+            New
+          </button>
+        </div>
+        <SettingsButton />
       </header>
 
       <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto px-3 py-4">
@@ -217,25 +324,24 @@ export function AgentPanel({ root, activePath, onDone, onFileChange }) {
           </div>
           <p className="mt-1 break-words text-[12px] text-zinc-300">
             <span className="font-mono text-amber-200/90">{pendingConfirm.tool}</span>
-            {pendingConfirm.summary ? ` — ${pendingConfirm.summary}` : ''}
+            {pendingConfirm.summary ? `: ${pendingConfirm.summary}` : ''}
           </p>
           {pendingConfirm.diff && (
-            <>
-              <p className="mt-1 font-mono text-[11px] text-zinc-500">
-                {pendingConfirm.diff.path}
-                {' '}
+            <div className="mt-1.5 flex items-center gap-2">
+              <p className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-500">
+                {pendingConfirm.diff.path}{' '}
                 <span className="text-emerald-400">+{pendingConfirm.diff.added}</span>{' '}
                 <span className="text-red-400">-{pendingConfirm.diff.removed}</span>
               </p>
-              <DiffView diff={pendingConfirm.diff} className="mt-2 max-h-64" />
-            </>
+              <button
+                type="button"
+                onClick={onViewDiff}
+                className="flex shrink-0 items-center gap-1 rounded-lg border border-amber-500/40 px-2 py-1 text-[11px] text-amber-200 transition-colors hover:bg-amber-500/10"
+              >
+                <Eye size={12} /> View diff
+              </button>
+            </div>
           )}
-          <input
-            value={feedback}
-            onChange={(e) => setFeedback(e.target.value)}
-            placeholder="Optional: tell the agent what to do instead"
-            className="mt-2 w-full rounded-lg border border-zinc-800 bg-[#101012] px-2 py-1.5 text-[12px] text-zinc-200 outline-none placeholder:text-zinc-600 focus:border-zinc-600"
-          />
           <div className="mt-2 flex gap-2">
             <Button type="button" size="sm" onClick={approve} className="flex-1">
               Approve

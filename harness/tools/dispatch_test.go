@@ -171,7 +171,7 @@ func TestAllowedGate(t *testing.T) {
 	_, name, env := setup(t)
 
 	result, _ := reg.Dispatch(editCall(name), []string{"read_file"}, ModeAuto, env, nil)
-	if !strings.Contains(result, "not allowed") {
+	if !strings.Contains(result, "does not exist in this task") {
 		t.Fatalf("expected not-allowed refusal, got %s", result)
 	}
 }

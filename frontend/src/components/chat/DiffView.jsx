@@ -1,7 +1,7 @@
 import { cn } from '../../lib/utils';
 
 // DiffView renders a unified diff (events.Diff: hunks of add/remove/context lines)
-// the way an editor shows a change — green additions, red removals.
+// the way an editor shows a change: green additions, red removals.
 export function DiffView({ diff, className }) {
   if (!diff || !diff.hunks?.length) return null;
   return (

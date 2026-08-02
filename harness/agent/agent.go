@@ -32,13 +32,14 @@ type Request struct {
 	Mode         string
 	WorkDir      string
 	Sandbox      bool     // web path: run code_run in an isolated sandbox, not the project
+	Chat         bool     // conversational mode: answer inline, no project/file workflow
 	InjectSkills []string // skill names to inject silently regardless of detection
 }
 
 // New builds an agent from a config and an optional skills directory. Alongside
 // that directory's shipped "default" skills, it also scans a sibling
-// "skills_local" directory for user-installed skills (e.g. added via the npx
-// installer), which is never touched by upgrades.
+// "skills_local" directory for user-installed skills (e.g. added via
+// `pilot skill add`), which is never touched by upgrades.
 func New(cfg *model.Config, skillsDir string) (*Agent, error) {
 	client := model.NewClient()
 	var localDir string

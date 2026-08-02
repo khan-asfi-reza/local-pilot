@@ -7,6 +7,7 @@ import { Reasoning } from './Reasoning';
 import { Loader } from './Loader';
 import { ToolCard } from './ToolCard';
 import { cn, humanizeModel } from '../../lib/utils';
+import { SettingsButton } from '../../features/settings/SettingsButton';
 
 function Brand() {
   return (
@@ -245,6 +246,7 @@ export function ChatWindow() {
           <div className="truncate text-sm font-medium text-zinc-300">
             {activeThread?.thread?.title || 'New chat'}
           </div>
+          <SettingsButton className="ml-auto" />
         </header>
 
         <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto">

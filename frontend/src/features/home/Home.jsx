@@ -1,6 +1,7 @@
 import { useNavigate } from 'react-router-dom';
 import { Code, MessageSquare, Wand2, ArrowUpRight } from 'lucide-react';
 import { cn } from '../../lib/utils';
+import { SettingsButton } from '../settings/SettingsButton';
 
 const CARDS = [
   {
@@ -59,14 +60,15 @@ export function Home() {
   const navigate = useNavigate();
 
   return (
-    <div className="hero-wash flex h-full flex-col items-center justify-center gap-12 px-6">
+    <div className="hero-wash relative flex h-full flex-col items-center justify-center gap-12 px-6">
+      <SettingsButton className="absolute right-4 top-4" />
       <div className="flex flex-col items-center text-center">
         <p className="eyebrow mb-4">Local AI · runs on your machine</p>
         <h1 className="bg-gradient-to-br from-zinc-50 to-zinc-400 bg-clip-text text-5xl font-semibold tracking-tight text-transparent">
           Pilot
         </h1>
         <p className="mt-3 max-w-sm text-[15px] leading-relaxed text-zinc-400">
-          Your coding agent, chat, and app builder — all running against a model on this machine.
+          Your coding agent, chat, and app builder, all running against a model on this machine.
         </p>
       </div>
 

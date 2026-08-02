@@ -6,6 +6,7 @@ from fastapi.responses import JSONResponse
 
 from routes.chat import router as chat_router
 from routes.builder import router as builder_router
+from routes.profile import router as profile_router
 
 # Clients treated as local. The /code routes drive a full-access, unsandboxed
 # agent over real files, so they must not be reachable from the LAN or driven by
@@ -36,9 +37,10 @@ def create_app() -> FastAPI:
     # request from reaching a handler; this check does.
     @app.middleware("http")
     async def guard_agent_routes(request: Request, call_next):
-        # /code and /builder drive a full-access agent (files, npm) over real
-        # dirs, so they must not be reachable from the LAN or a malicious page.
-        if request.url.path.startswith(("/code", "/builder")):
+        # /code, /builder, /telegram and /profile drive a full-access agent
+        # (files, npm) over real dirs, or expose owner config, so they must not
+        # be reachable from the LAN or a malicious page.
+        if request.url.path.startswith(("/code", "/builder", "/telegram", "/profile")):
             host = request.client.host if request.client else ""
             if host not in _LOCAL_HOSTS:
                 return JSONResponse({"detail": "localhost only"}, status_code=403)
@@ -49,6 +51,7 @@ def create_app() -> FastAPI:
 
     app.include_router(chat_router)
     app.include_router(builder_router)
+    app.include_router(profile_router)
     # The Code IDE routes are optional at boot: tolerate a missing routes/code.py
     # so the app still starts if that part is not present yet.
     try:

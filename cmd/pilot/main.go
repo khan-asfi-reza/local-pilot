@@ -38,6 +38,8 @@ func main() {
 		err = web()
 	case "models":
 		err = modelsCmd(args[1:])
+	case "skill", "skills":
+		err = skillCmd(args[1:])
 	case "context":
 		err = contextCmd(args[1:])
 	case "code":
@@ -200,14 +202,30 @@ func web() error {
 	}
 	// Bind 0.0.0.0 so other machines on the LAN can reach the backend and UI.
 	be := command(backendDir, pythonBin(backendDir), "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", strconv.Itoa(backendPort))
+	// The backend resolves its SQLite DB from the global data dir (see
+	// backend/core/database.py), so profile/thread state lives in one place no
+	// matter where pilot runs — don't pin it to a cwd-relative file.
 	be.Env = append(os.Environ(),
-		"DATABASE_URL=sqlite:///./local-pilot.db",
 		fmt.Sprintf("HARNESS_URL=http://localhost:%d/run", harnessPort),
 	)
 	fe := command(frontendDir, npmBin(), "run", "dev", "--", "--host", "--port", strconv.Itoa(frontendPort))
 
+	// The Telegram bridge is optional: launch it when present. It idles until a
+	// bot token is set in Settings, so starting it unconditionally is safe; a
+	// missing Python dep just makes it exit without affecting the rest.
+	telegramDir := filepath.Join(root, "telegram")
+	var tg *exec.Cmd
+	if fileExists(filepath.Join(telegramDir, "bot.py")) {
+		tg = command(telegramDir, pythonBin(telegramDir), "bot.py")
+		tg.Env = append(os.Environ(), fmt.Sprintf("BACKEND_URL=http://localhost:%d", backendPort))
+	}
+
 	fmt.Println(dim("… starting services"))
-	for _, c := range []*exec.Cmd{hs, be, fe} {
+	svcs := []*exec.Cmd{hs, be, fe}
+	if tg != nil {
+		svcs = append(svcs, tg)
+	}
+	for _, c := range svcs {
 		setProcGroup(c)
 		if e := c.Start(); e != nil {
 			return fmt.Errorf("start %s: %w", filepath.Base(c.Path), e)
@@ -226,6 +244,9 @@ func web() error {
 	fmt.Println(bold("  Open:   ") + cyan(frontendURL))
 	fmt.Println(dim("  api:    ") + backendURL)
 	fmt.Println(dim("  model:  ") + name)
+	if tg != nil {
+		fmt.Println(dim("  telegram: ") + "bridge running — set a bot token in Settings → Telegram")
+	}
 	if ip := localIP(); ip != "" {
 		fmt.Println(dim("  on your LAN: ") + cyan(fmt.Sprintf("http://%s:%d", ip, frontendPort)))
 	}

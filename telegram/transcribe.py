@@ -12,14 +12,14 @@ import tempfile
 
 from faster_whisper import WhisperModel
 
-_model: WhisperModel | None = None
+whisper_model: WhisperModel | None = None
 
 
-def _get_model() -> WhisperModel:
-    global _model
-    if _model is None:
-        _model = WhisperModel("base", device="cpu", compute_type="int8")
-    return _model
+def get_model() -> WhisperModel:
+    global whisper_model
+    if whisper_model is None:
+        whisper_model = WhisperModel("base", device="cpu", compute_type="int8")
+    return whisper_model
 
 
 def transcribe(ogg_path: str) -> str:
@@ -36,7 +36,7 @@ def transcribe(ogg_path: str) -> str:
             check=True,
             capture_output=True,
         )
-        segments, info = _get_model().transcribe(wav_path)
+        segments, info = get_model().transcribe(wav_path)
         parts = [seg.text for seg in segments]
         return " ".join(parts).strip()
     finally:

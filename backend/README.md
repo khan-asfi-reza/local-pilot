@@ -17,6 +17,6 @@ If you later want the Go harness instead, set `HARNESS_URL=http://localhost:9000
 
 - `PORT` default `6000`
 - `HARNESS_URL` default `http://localhost:8001/run`
-- `DATABASE_URL` default `sqlite:///./local-pilot.db`
+- `DATABASE_URL` default: SQLite in the global data dir (`~/.localpilot/localpilot.db`; see `core/database.py`)
 
 The backend exposes thread persistence and an SSE turn endpoint for the web client.
