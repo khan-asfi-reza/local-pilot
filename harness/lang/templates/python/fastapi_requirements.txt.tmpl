@@ -1,0 +1,5 @@
+fastapi
+uvicorn[standard]
+{{if .has_postgres}}sqlalchemy
+psycopg[binary]
+{{end}}

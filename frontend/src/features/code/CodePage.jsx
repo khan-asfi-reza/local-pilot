@@ -186,11 +186,12 @@ export function CodePage() {
     [handleProjectOpen],
   );
 
-  // A new project opens straight away; its first instruction (if any) is handed
-  // to the agent panel, which sends it once the project is loaded.
+  // A new project opens straight away; its first instruction (if any) is a
+  // { text, attachments } payload handed to the agent panel, which sends it once
+  // the project is loaded — the spec rides along as an attachment, not a file.
   const handleProjectCreated = useCallback(
-    (proj, prompt) => {
-      setInitialPrompt(prompt || null);
+    (proj, payload) => {
+      setInitialPrompt(payload || null);
       handleProjectOpen(proj);
     },
     [handleProjectOpen],
@@ -253,7 +254,7 @@ export function CodePage() {
   }
 
   return (
-    <div className="flex h-full">
+    <div className="flex h-full overflow-hidden">
       <FileTree
         root={root}
         projectName={projectName}
@@ -266,7 +267,7 @@ export function CodePage() {
         onDeleted={handleDeleted}
         onRenamed={handleRenamed}
       />
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         {reviewOpen && confirmState ? (
           <DiffReview
             confirm={confirmState.confirm}
@@ -297,6 +298,7 @@ export function CodePage() {
       <AgentPanel
         root={root}
         activePath={activePath}
+        tree={tree}
         initialPrompt={initialPrompt}
         onInitialPromptSent={() => setInitialPrompt(null)}
         onDone={handleAgentDone}

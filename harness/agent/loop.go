@@ -56,7 +56,7 @@ func (a *Agent) Run(ctx context.Context, req Request, emit func(events.Event), c
 		}
 	}
 	projMemory := discoverMemory(req.WorkDir)
-	repoMap := buildRepoMap(req.WorkDir)
+	repoMap := a.repoDigest(req)
 	includeMutating := req.Mode != tools.ModePlan
 
 	env := tools.Env{
@@ -130,7 +130,7 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 	targets := req.Grounding.Targets()
 	mutatedTargets := map[string]bool{}
 	mutatedAny := false
-	groundingNudged := false
+	groundingNudges := 0
 	driftNudged := false
 	falseDoneNudged := false
 
@@ -166,8 +166,8 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 			// Grounding gate: nudge once if a named target was never changed, then fail hard.
 			if !req.Chat && req.Grounding.RequiresMutation() {
 				if missing := missingTargets(targets, mutatedTargets); len(missing) > 0 {
-					if !groundingNudged {
-						groundingNudged = true
+					if groundingNudges < 3 {
+						groundingNudges++
 						conv = append(conv, model.Message{Role: "assistant", Content: text})
 						conv = append(conv, model.Message{Role: "user", Content: groundingMissMsg(missing)})
 						continue
@@ -297,7 +297,7 @@ func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event
 	targets := req.Grounding.Targets()
 	mutatedTargets := map[string]bool{}
 	mutatedAny := false
-	groundingNudged := false
+	groundingNudges := 0
 	driftNudged := false
 	falseDoneNudged := false
 
@@ -332,8 +332,8 @@ func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event
 			// Grounding gate: nudge once, then fail hard.
 			if !req.Chat && req.Grounding.RequiresMutation() {
 				if missing := missingTargets(targets, mutatedTargets); len(missing) > 0 {
-					if !groundingNudged {
-						groundingNudged = true
+					if groundingNudges < 3 {
+						groundingNudges++
 						conv = append(conv, model.Message{Role: "assistant", Content: raw})
 						conv = append(conv, model.Message{Role: "user", Content: groundingMissMsg(missing)})
 						continue

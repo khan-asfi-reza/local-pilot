@@ -1,0 +1,15 @@
+import os
+
+from flask import Flask
+
+app = Flask(__name__)
+{{if .has_postgres}}app.config["SQLALCHEMY_DATABASE_URI"] = os.environ["DATABASE_URL"]{{end}}
+
+
+@app.get("/")
+def index():
+    return {"status": "ok"}
+
+
+if __name__ == "__main__":
+    app.run(debug=True)

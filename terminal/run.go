@@ -12,6 +12,7 @@ import (
 	"harness/harness/events"
 	"harness/harness/model"
 	"harness/harness/projects"
+	"harness/harness/tools"
 )
 
 // Run is the headless one-shot entry (`pilot run`): it runs one task to
@@ -27,15 +28,25 @@ func Run(argv []string) {
 	format := fs.String("format", "ndjson", "event output format: ndjson or human")
 	maxSteps := fs.Int("max-steps", 0, "override the per-request step cap (0 = default)")
 	grounding := fs.String("grounding", "", "path to a JSON grounding contract {action, explicit_targets} pinning the named target(s)")
+	modelName := fs.String("model", "", "build model to use (default: the active/default model)")
+	plannerName := fs.String("planner", "", "planner model for decomposition (default: config default_planner, else the build model)")
 	_ = fs.Parse(argv)
 
 	prompt := *task
 	if *taskFile != "" {
-		raw, err := os.ReadFile(*taskFile)
-		if err != nil {
-			fatal("read task file: %v", err)
+		if tools.IsDocument(*taskFile) {
+			text, err := tools.ExtractDocument(*taskFile)
+			if err != nil {
+				fatal("extract task document: %v", err)
+			}
+			prompt = text
+		} else {
+			raw, err := os.ReadFile(*taskFile)
+			if err != nil {
+				fatal("read task file: %v", err)
+			}
+			prompt = string(raw)
 		}
-		prompt = string(raw)
 	}
 	if prompt == "" {
 		fatal("nothing to do: pass --task \"...\" or --task-file <path>")
@@ -49,6 +60,7 @@ func Run(argv []string) {
 		fatal("working directory does not exist: %s", workDir)
 	}
 	_, _ = projects.Upsert(workDir, "terminal")
+	model.SetLogDir(filepath.Join(workDir, ".pilot", "logs"))
 
 	cfgPath := *configPath
 	if cfgPath == "" {
@@ -57,6 +69,9 @@ func Run(argv []string) {
 	cfg, err := model.LoadConfig(cfgPath)
 	if err != nil {
 		fatal("%v", err)
+	}
+	if *plannerName != "" {
+		cfg.DefaultPlanner = *plannerName
 	}
 
 	skills := *skillsDir
@@ -72,7 +87,13 @@ func Run(argv []string) {
 		fatal("%v", err)
 	}
 	ag.SetMaxSteps(*maxSteps)
-	pickRunningModel(ag)
+	if *modelName != "" {
+		if err := ag.SetModel(*modelName); err != nil {
+			fatal("%v", err)
+		}
+	} else {
+		pickRunningModel(ag)
+	}
 	if !ag.Reachable(ag.ActiveModel()) {
 		fatal("no model backend is running for %q; start one first (e.g. ollama serve)", ag.ActiveModel())
 	}

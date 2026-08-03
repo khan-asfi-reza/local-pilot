@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 )
 
@@ -80,9 +81,10 @@ func Decompose(ctx context.Context, p Planner, c *Contract, outline, stateText s
 		"path) and use those SAME names in every task's description and target_files, so independently-built files " +
 		"import and wire together.\n" +
 		"5. Include a task that creates the test/verification file(s) the acceptance criteria require.\n" +
-		"6. If PROJECT STATE lists existing files, the project ALREADY EXISTS: plan ONLY the additional or changed " +
-		"work, reuse and extend the existing modules, and do NOT recreate or overwrite files that already exist " +
-		"unless the task explicitly requires changing them.\n" +
+		"6. COVER THE WHOLE PROJECT: across all tasks, target_files must include EVERY file needed to satisfy the " +
+		"acceptance criteria — entrypoint/config, data layer, business logic, API endpoints, the test file, and any " +
+		"frontend. A file only exists if it is listed under PROJECT STATE; assume nothing else exists yet. Do NOT " +
+		"recreate files listed as existing unless the task must change them.\n" +
 		"Each sub-task: short id (t1, t2, ...), a title, a description precise enough to build the files ALONE " +
 		"(name the exact modules, routes, symbols and imports it must expose or use), deps (ids), target_files " +
 		"(exact paths), acceptance, and section_idx (the outline number, or -1). No cycles. Output ONLY the JSON."
@@ -91,15 +93,27 @@ func Decompose(ctx context.Context, p Planner, c *Contract, outline, stateText s
 		user += "\n\nPROJECT STATE (already scaffolded — plan FEATURE tasks on top; reuse these names/layout):\n" + stateText
 	}
 	user += "\n\nSECTION OUTLINE:\n" + outline
-	raw, err := p.PlanJSON(ctx, sys, clip(user, 8000), json.RawMessage(decomposeSchema))
-	if err != nil {
-		return Plan{}, err
+
+	// The tool-call plan is occasionally empty/unparseable on a small model; retry
+	// a few times before giving up so a transient miss doesn't collapse to one task.
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		raw, err := p.PlanJSON(ctx, sys, clip(user, 8000), json.RawMessage(decomposeSchema))
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		var plan Plan
+		if json.Unmarshal([]byte(raw), &plan) == nil {
+			if plan = normalizePlan(plan); len(plan.Tasks) > 0 {
+				return plan, nil
+			}
+		}
 	}
-	var plan Plan
-	if json.Unmarshal([]byte(raw), &plan) != nil {
-		return Plan{}, err
+	if lastErr != nil {
+		return Plan{}, lastErr
 	}
-	return normalizePlan(plan), nil
+	return Plan{}, fmt.Errorf("decompose produced no tasks")
 }
 
 func normalizePlan(p Plan) Plan {

@@ -134,8 +134,23 @@ export function useCodeAgent(onFileChange, onActivity) {
   }, []);
 
   const send = useCallback(
-    async (prompt, root, model, mode, onDone) => {
-      const userMsg = { id: uid('u'), role: 'user', content: prompt };
+    async (prompt, root, model, mode, onDone, attachments = []) => {
+      // The chip metadata rides along on the displayed message (no text, to keep
+      // state light); the full text only goes to the model in `sentContent`.
+      const chips = attachments.map((a) => ({ kind: a.kind, name: a.name, path: a.path }));
+      const userMsg = { id: uid('u'), role: 'user', content: prompt, attachments: chips };
+
+      // Attached docs / @-mentioned files are appended to the model's copy of the
+      // prompt as labelled context blocks, so the panel shows a clean prompt while
+      // the agent still receives the document/file contents.
+      const context = attachments
+        .map((a) =>
+          a.kind === 'file'
+            ? `\n\n[Attached file: ${a.path}]\n${a.text || ''}\n`
+            : `\n\n[Attached document: ${a.name}]\n${a.text || ''}\n`,
+        )
+        .join('');
+      const sentContent = prompt + context;
 
       // Build the outgoing history from the prior turns (already in the ref)
       // plus this prompt, explicitly. Reading messagesRef right after
@@ -146,7 +161,7 @@ export function useCodeAgent(onFileChange, onActivity) {
       const outgoing = messagesRef.current
         .filter((m) => m.role === 'user' || m.role === 'assistant')
         .map((m) => ({ role: m.role, content: m.content || '' }));
-      outgoing.push({ role: 'user', content: prompt });
+      outgoing.push({ role: 'user', content: sentContent });
 
       setMessages((prev) => {
         const msgs = [...prev, userMsg];

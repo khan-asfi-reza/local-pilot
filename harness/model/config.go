@@ -46,19 +46,32 @@ const (
 
 // Config is the model registry, loaded from models/models.json. It is the single
 type Config struct {
-	AssetsDir     string       `json:"assets_dir,omitempty"`
-	ContextTokens int          `json:"context_tokens"`
+	AssetsDir     string `json:"assets_dir,omitempty"`
+	ContextTokens int    `json:"context_tokens"`
 	// ContextLength is the saved OLLAMA_CONTEXT_LENGTH override; 0 means auto-size
 	// from the machine's hardware at launch.
-	ContextLength int          `json:"ollama_context_length,omitempty"`
-	Default       string       `json:"default"`
-	Models        []ModelEntry `json:"models"`
+	ContextLength int    `json:"ollama_context_length,omitempty"`
+	Default       string `json:"default"`
+	// DefaultPlanner is the model used for the planning phase (intake, scaffold,
+	// decompose). Empty falls back to the active/default model.
+	DefaultPlanner string       `json:"default_planner,omitempty"`
+	Models         []ModelEntry `json:"models"`
 	// Suggested is the list of base ollama models the start menu offers; the first
 	// is the default choice.
 	Suggested []string `json:"suggested,omitempty"`
+	// Graph configures the tree-sitter repo graph; nil means default (on when the
+	// binary was built with tree-sitter).
+	Graph *GraphConfig `json:"graph,omitempty"`
 
 	active string // runtime selection
 	dir    string // directory of the config file, for resolving assets
+}
+
+// GraphConfig tunes the repo memory graph.
+type GraphConfig struct {
+	Enabled  *bool `json:"enabled,omitempty"` // nil = default on
+	MaxBytes int   `json:"max_bytes,omitempty"`
+	MaxFiles int   `json:"max_files,omitempty"`
 }
 
 // AddModel adds or replaces a model entry by name.
@@ -121,6 +134,28 @@ func (c *Config) entry(name string) (ModelEntry, bool) {
 
 // ActiveName returns the name of the active model.
 func (c *Config) ActiveName() string { return c.active }
+
+// PlannerName returns the model used for planning, falling back to the active
+// model when no dedicated planner is configured.
+func (c *Config) PlannerName() string {
+	if c.DefaultPlanner != "" {
+		if _, ok := c.entry(c.DefaultPlanner); ok {
+			return c.DefaultPlanner
+		}
+	}
+	return c.active
+}
+
+// SetPlanner sets the planner model (empty clears it, falling back to default).
+func (c *Config) SetPlanner(name string) error {
+	if name != "" {
+		if _, ok := c.entry(name); !ok {
+			return fmt.Errorf("unknown model %q; configured models are %v", name, c.Names())
+		}
+	}
+	c.DefaultPlanner = name
+	return nil
+}
 
 // DefaultEntry returns the configured default model entry.
 func (c *Config) DefaultEntry() (ModelEntry, bool) { return c.entry(c.active) }

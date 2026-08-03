@@ -68,7 +68,7 @@ export function Editor({ openFiles, activePath, onTabClick, onChange, onSave, on
   }, [autoSave, active?.path, active?.content, active?.dirty, onSave]);
 
   return (
-    <div className="flex min-w-0 flex-1 flex-col">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center overflow-x-auto border-b border-zinc-800 bg-[#101012]">
         {openFiles.map((f) => {
             const isActive = f.path === activePath;

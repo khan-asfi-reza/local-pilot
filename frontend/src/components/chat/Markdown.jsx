@@ -48,7 +48,7 @@ function balanceBold(md) {
 
 export function Markdown({ children }) {
   return (
-    <div className="text-[0.875rem] text-zinc-100">
+    <div className="min-w-0 break-words text-[0.875rem] text-zinc-100 [overflow-wrap:anywhere]">
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
         {balanceBold(children || '')}
       </ReactMarkdown>

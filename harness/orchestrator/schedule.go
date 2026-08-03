@@ -71,15 +71,8 @@ func Schedule(ctx context.Context, d *DAG, mem *Memory, pol Policy, exec ExecFun
 				emit(events.Text("✓ " + r.Task.ID + " done\n"))
 			} else {
 				failed[r.Task.ID] = true
+				done[r.Task.ID] = true // still unblock dependents; they build against whatever exists
 				emit(events.Text("✗ " + r.Task.ID + " failed: " + r.Summary + "\n"))
-				for _, dep := range d.TransitiveDependents(r.Task.ID) {
-					if !started[dep] && !done[dep] && !failed[dep] {
-						results[dep] = skipped(d.Task(dep))
-						failed[dep] = true
-						started[dep] = true
-						settled++
-					}
-				}
 				if pol.AbortOnFail {
 					cancel()
 				}

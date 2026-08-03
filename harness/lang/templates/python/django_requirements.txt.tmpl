@@ -1,0 +1,6 @@
+Django==5.1.*
+dj-database-url
+psycopg[binary]
+{{if .has_redis}}celery
+redis
+{{end}}

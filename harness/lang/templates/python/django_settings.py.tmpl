@@ -1,0 +1,9 @@
+# --- pilot: appended configuration ---
+import os
+
+INSTALLED_APPS += ["{{.app}}"]
+{{if .has_postgres}}
+import dj_database_url
+
+DATABASES["default"] = dj_database_url.parse(os.environ["DATABASE_URL"])
+{{end}}

@@ -77,3 +77,12 @@ def upsert(path: str, name: str | None = None, source: str = "web") -> dict:
 def remove(pid: str) -> None:
     with _lock:
         _save([p for p in _load() if p.get("id") != pid])
+
+
+def clear() -> int:
+    """Forget every registered project. Only the registry is emptied — no files on
+    disk are touched, so a cleared project reappears the next time it is opened."""
+    with _lock:
+        n = len(_load())
+        _save([])
+        return n

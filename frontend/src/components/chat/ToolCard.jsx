@@ -40,7 +40,7 @@ export function ToolCard({ tool, info, input, output, running }) {
   const { code, lang } = extractCode(input);
   const out = summarize(output).trim();
   return (
-    <div className="mb-4 ml-11 overflow-hidden rounded-xl border border-zinc-800 bg-[#101012] text-sm">
+    <div className="mb-4 ml-11 min-w-0 max-w-full overflow-hidden rounded-xl border border-zinc-800 bg-[#101012] text-sm">
       <button
         type="button"
         onClick={() => code && setOpen((v) => !v)}

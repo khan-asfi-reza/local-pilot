@@ -35,6 +35,20 @@ func (r *Router) Chat(ctx context.Context, msgs []Message, defs []ToolDef, onDel
 	return r.client.Chat(ctx, url, name, msgs, defs, onDelta)
 }
 
+// ChatWith runs a native tool-calling turn on a SPECIFIC model (not the active
+// one), used to route planning through a dedicated planner model. Falls back to
+// the active model if the name is unknown.
+func (r *Router) ChatWith(ctx context.Context, modelName string, msgs []Message, defs []ToolDef, onDelta func(kind, text string)) (Message, int, error) {
+	url, ok := r.cfg.URLFor(modelName)
+	if !ok {
+		return r.Chat(ctx, msgs, defs, onDelta)
+	}
+	return r.client.Chat(ctx, url, modelName, msgs, defs, onDelta)
+}
+
+// PlannerName returns the configured planner model (or the active model).
+func (r *Router) PlannerName() string { return r.cfg.PlannerName() }
+
 // ToolMode returns the active model's tool-calling strategy.
 func (r *Router) ToolMode() string { return r.cfg.ToolMode() }
 

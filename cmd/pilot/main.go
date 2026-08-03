@@ -4,7 +4,6 @@
 package main
 
 import (
-	"slices"
 	"context"
 	"fmt"
 	"net"
@@ -13,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -549,8 +549,14 @@ func modelsCmd(args []string) error {
 			name = args[1]
 		}
 		return setDefaultModel(cfgPath, cfg, name)
+	case "set-default-planner":
+		name := ""
+		if len(args) >= 2 {
+			name = args[1]
+		}
+		return setDefaultPlanner(cfgPath, cfg, name)
 	default:
-		return fmt.Errorf("unknown: pilot models %s (try add, list, or set-default)", args[0])
+		return fmt.Errorf("unknown: pilot models %s (try add, list, set-default, or set-default-planner)", args[0])
 	}
 }
 
@@ -662,7 +668,6 @@ func addRemoteModel(cfgPath string, cfg *model.Config, name, host string) error 
 	return nil
 }
 
-
 func installedModels() []string {
 	names, _ := model.NewClient().InstalledModels("http://localhost:11434")
 	return names
@@ -713,6 +718,27 @@ func modelsList(cfg *model.Config) error {
 
 // setDefaultModel makes a configured model the default, asking the user to pick
 // one when no name is given. Remote models (registered by host) are eligible.
+func setDefaultPlanner(cfgPath string, cfg *model.Config, name string) error {
+	if name != "" && !registered(cfg, name) && !contains(installedModels(), name) {
+		return fmt.Errorf("%q is not configured or installed locally. Add it with %s", name, cyan("pilot models add "+name))
+	}
+	if name != "" && !registered(cfg, name) {
+		cfg.AddModel(model.ModelEntry{Name: name, ToolMode: toolModeFor(name), Port: 11434})
+	}
+	if err := cfg.SetPlanner(name); err != nil {
+		return err
+	}
+	if err := cfg.Save(cfgPath); err != nil {
+		return err
+	}
+	if name == "" {
+		fmt.Println(green("✓ ") + "planner model cleared (falls back to the default model)")
+	} else {
+		fmt.Println(green("✓ ") + "planner model is now " + bold(name))
+	}
+	return nil
+}
+
 func setDefaultModel(cfgPath string, cfg *model.Config, name string) error {
 	if name == "" {
 		choices := cfg.Names()

@@ -104,7 +104,9 @@ func (d *DAG) Ready(done, failed, started map[string]bool) []string {
 		}
 		ok := true
 		for _, dep := range uniqueDeps(d.tasks[id].Deps) {
-			if failed[dep] || !done[dep] {
+			// A failed dep is marked done too (best-effort build), so only block on
+			// a dep that has not finished at all.
+			if !done[dep] {
 				ok = false
 				break
 			}

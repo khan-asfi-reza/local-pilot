@@ -9,6 +9,24 @@ const maxSections = 40
 
 var headingRe = regexp.MustCompile(`^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$`)
 
+// numHeadingRe catches numbered section headings in non-markdown specs (e.g. a
+// .docx exported to text): "1. Title", "3.1 Title", "5.2 Title (…)". Only applied
+// to SHORT lines, so a descriptive numbered list item ("1. Media Assets: Minimum
+// 3 images …") is not mistaken for a section heading.
+var numHeadingRe = regexp.MustCompile(`^\s{0,3}\d+(?:\.\d+)*\.?\s+\S`)
+
+// headingTitle returns the section title for a heading line (markdown or numbered),
+// and whether the line is a heading at all.
+func headingTitle(ln string) (string, bool) {
+	if m := headingRe.FindStringSubmatch(ln); m != nil {
+		return strings.TrimSpace(m[1]), true
+	}
+	if t := strings.TrimSpace(ln); len(t) <= 70 && numHeadingRe.MatchString(ln) {
+		return t, true // keep the leading number in the title — useful context
+	}
+	return "", false
+}
+
 // SplitSections slices a PRD into sections on Markdown headings; content before
 // the first heading is an untitled intro. This is what guarantees no single call
 // ever sees the whole PRD.
@@ -29,9 +47,9 @@ func SplitSections(text string) []Section {
 	}
 
 	for _, ln := range lines {
-		if m := headingRe.FindStringSubmatch(ln); m != nil {
+		if ht, ok := headingTitle(ln); ok {
 			flush()
-			title = strings.TrimSpace(m[1])
+			title = ht
 			continue
 		}
 		cur = append(cur, ln)

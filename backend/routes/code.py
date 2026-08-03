@@ -1,11 +1,18 @@
+import base64
+import html
+import io
 import json
 import os
+import re
 import shutil
+import subprocess
+import tempfile
+import zipfile
 from typing import Any, AsyncIterator
 from urllib.parse import urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse
 from starlette.requests import HTTPConnection
 
@@ -19,8 +26,88 @@ router = APIRouter(prefix="/code", dependencies=[])
 
 SKIP_DIRS = {".git", "node_modules", "dist", ".venv", "__pycache__"}
 
+MAX_DOC_BYTES = 200 * 1024  # cap on the text returned by /extract
+
+MAX_RAW_DOC_BYTES = 25 * 1024 * 1024  # cap on a source doc saved into .pilot/
 
 LOCAL_HOSTS = {"127.0.0.1", "::1", "localhost"}
+
+_XML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_xml(s: str) -> str:
+    return html.unescape(_XML_TAG_RE.sub("", s))
+
+
+def _zip_entry(z: zipfile.ZipFile, name: str) -> str:
+    with z.open(name) as f:
+        return f.read().decode("utf-8", errors="replace")
+
+
+def _extract_docx(data: bytes) -> str:
+    # OOXML: paragraphs/table rows close with </w:p>/</w:tr>; tabs are <w:tab/>.
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        raw = _zip_entry(z, "word/document.xml")
+    raw = raw.replace("<w:tab/>", "\t").replace("</w:p>", "\n").replace("</w:tr>", "\n")
+    return _strip_xml(raw).strip()
+
+
+def _extract_pptx(data: bytes) -> str:
+    out = []
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        names = sorted(
+            n for n in z.namelist() if n.startswith("ppt/slides/slide") and n.endswith(".xml")
+        )
+        for n in names:
+            raw = _zip_entry(z, n).replace("</a:p>", "\n")
+            out.append(_strip_xml(raw).strip())
+    return "\n\n".join(t for t in out if t).strip()
+
+
+def _extract_xlsx(data: bytes) -> str:
+    with zipfile.ZipFile(io.BytesIO(data)) as z:
+        if "xl/sharedStrings.xml" not in z.namelist():
+            return ""
+        raw = _zip_entry(z, "xl/sharedStrings.xml")
+    return _strip_xml(raw.replace("</si>", "\n")).strip()
+
+
+def _extract_pdf(data: bytes) -> str:
+    with tempfile.NamedTemporaryFile(suffix=".pdf") as tmp:
+        tmp.write(data)
+        tmp.flush()
+        if shutil.which("pdftotext"):
+            try:
+                out = subprocess.run(
+                    ["pdftotext", "-layout", tmp.name, "-"], capture_output=True, timeout=30
+                )
+                if out.returncode == 0:
+                    return out.stdout.decode("utf-8", errors="replace").strip()
+            except (OSError, subprocess.SubprocessError):
+                pass
+        try:
+            from pdfminer.high_level import extract_text  # optional dependency
+
+            return (extract_text(tmp.name) or "").strip()
+        except Exception:
+            pass
+    return "[Could not extract PDF text: install poppler (brew install poppler) for the pdftotext command, or pip install pdfminer.six]"
+
+
+def _extract_text(filename: str, data: bytes) -> str:
+    ext = os.path.splitext(filename)[1].lower()
+    try:
+        if ext == ".docx":
+            return _extract_docx(data)
+        if ext == ".pptx":
+            return _extract_pptx(data)
+        if ext == ".xlsx":
+            return _extract_xlsx(data)
+        if ext == ".pdf":
+            return _extract_pdf(data)
+    except (zipfile.BadZipFile, KeyError) as exc:
+        return f"[Could not extract {filename}: {exc}]"
+    return data.decode("utf-8", errors="replace")
 
 
 def local_only(conn: HTTPConnection) -> None:
@@ -84,13 +171,26 @@ async def create_project(request: Request) -> dict[str, Any]:
     return {"project": projects.upsert(resolved, source="web")}
 
 
+@router.delete("/projects")
+def clear_projects(id: str | None = None) -> dict[str, Any]:
+    """Forget one project (?id=) or the whole recent list. Registry-only: the
+    folder and its files stay on disk."""
+    if id:
+        if not projects.get(id):
+            raise HTTPException(status_code=404, detail="unknown project")
+        projects.remove(id)
+        return {"ok": True, "removed": 1}
+    return {"ok": True, "removed": projects.clear()}
+
+
 @router.post("/projects/new", status_code=200)
 async def new_project(request: Request) -> dict[str, Any]:
-    """Create <location>/<name> on disk, seed an optional PRD.md, and register it."""
+    """Create <location>/<name> on disk and register it. The brief/PRD is NOT
+    written to the project as a file — it rides along to the agent as attached
+    context (and the raw source doc is kept under .pilot/ via /projects/doc)."""
     body = await request.json()
     name = (body.get("name") or "").strip()
     location = os.path.realpath(os.path.expanduser(body.get("location") or ""))
-    prd = body.get("prd") or ""
     if not name or name in {".", ".."} or "/" in name or "\\" in name or name.startswith("-"):
         raise HTTPException(status_code=400, detail="invalid project name")
     if not os.path.isdir(location):
@@ -104,10 +204,36 @@ async def new_project(request: Request) -> dict[str, Any]:
         os.makedirs(target, exist_ok=True)
     except OSError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    if prd.strip():
-        with open(os.path.join(target, "PRD.md"), "w", encoding="utf-8") as f:
-            f.write(prd if prd.endswith("\n") else prd + "\n")
-    return {"project": projects.upsert(target, name=name, source="web"), "prd": bool(prd.strip())}
+    return {"project": projects.upsert(target, name=name, source="web")}
+
+
+@router.post("/projects/doc", status_code=200)
+async def save_project_doc(request: Request) -> dict[str, Any]:
+    """Keep an uploaded source document with the project by writing it to <root>/.pilot/."""
+    body = await request.json()
+    root = os.path.realpath(body.get("root") or "")
+    filename = os.path.basename(body.get("filename") or "")
+    if not os.path.isdir(root):
+        raise HTTPException(status_code=400, detail="not a directory")
+    # Only write inside a directory the app already tracks as a project, so a local
+    # caller cannot drop files into an arbitrary .pilot/ anywhere on disk.
+    if not any(os.path.realpath(p.get("path", "")) == root for p in projects.list_projects()):
+        raise HTTPException(status_code=403, detail="root is not a registered project")
+    # basename already strips separators; also require a safe, non-dotfile name so
+    # the write target is fully predictable.
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", filename):
+        raise HTTPException(status_code=400, detail="invalid filename")
+    try:
+        data = base64.b64decode(body.get("content_b64") or "", validate=True)
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="invalid base64 content")
+    if len(data) > MAX_RAW_DOC_BYTES:
+        raise HTTPException(status_code=413, detail="document too large")
+    pilot = os.path.join(root, ".pilot")
+    os.makedirs(pilot, exist_ok=True)
+    with open(os.path.join(pilot, filename), "wb") as f:
+        f.write(data)
+    return {"ok": True, "path": f".pilot/{filename}"}
 
 
 @router.post("/fs/entry", status_code=200)
@@ -227,6 +353,17 @@ async def write_file(request: Request) -> dict[str, Any]:
     with open(target, "w", encoding="utf-8") as f:
         f.write(content)
     return {"ok": True}
+
+
+@router.post("/extract")
+async def extract_document(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Extract plain text from an uploaded document (docx/pdf/pptx/xlsx/txt/md)."""
+    filename = os.path.basename(file.filename or "document")
+    data = await file.read()
+    text = _extract_text(filename, data)
+    if len(text) > MAX_DOC_BYTES:
+        text = text[:MAX_DOC_BYTES]
+    return {"filename": filename, "text": text}
 
 
 @router.post("/agent")

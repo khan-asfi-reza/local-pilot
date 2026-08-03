@@ -18,7 +18,7 @@ export function CodeBlock({ language, value }) {
     }
   };
   return (
-    <div className="mb-3 overflow-hidden rounded-xl border border-zinc-800">
+    <div className="mb-3 min-w-0 max-w-full overflow-hidden rounded-xl border border-zinc-800">
       <div className="flex items-center justify-between bg-[#08080a] px-3 py-1.5 text-xs text-zinc-500">
         <span className="font-mono">{lang}</span>
         <button
@@ -30,10 +30,13 @@ export function CodeBlock({ language, value }) {
           {copied ? 'Copied' : 'Copy'}
         </button>
       </div>
+      {/* The highlighter's own <pre> is the horizontal scroller, so its background
+          spans the full width at EVERY scroll position — no two-tone gap where the
+          card shows through when the code is scrolled sideways. */}
       <SyntaxHighlighter
         language={lang}
         style={oneDark}
-        customStyle={{ margin: 0, background: '#0c0c0e', padding: '0.9rem 1rem', fontSize: '0.85rem' }}
+        customStyle={{ margin: 0, background: '#0c0c0e', padding: '0.9rem 1rem', fontSize: '0.85rem', overflowX: 'auto', maxWidth: '100%' }}
         codeTagProps={{ style: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace' } }}
       >
         {value}

@@ -565,7 +565,7 @@ export function FileTree({
 
       {root && tree && (
         <div
-          className="flex-1 overflow-y-auto px-1 py-1"
+          className="min-h-0 flex-1 overflow-y-auto px-1 py-1"
           onContextMenu={(e) => {
             if (e.target === e.currentTarget) openMenu(e, null);
           }}

@@ -32,7 +32,9 @@ func (p agentPlanner) PlanJSON(ctx context.Context, system, user string, schema 
 	}}
 	sys := system + "\n\nCall the submit function with the result."
 	msgs := compact(sys, []model.Message{{Role: "user", Content: user}}, p.a.contextTokens)
-	msg, _, err := p.a.router.Chat(ctx, msgs, defs, nil)
+	// Planning runs on the dedicated planner model (a stronger model decomposes);
+	// the children build on the fast default model.
+	msg, _, err := p.a.router.ChatWith(ctx, p.a.router.PlannerName(), msgs, defs, nil)
 	if err != nil {
 		return "", err
 	}
@@ -117,6 +119,12 @@ func (e agentExecutor) RunChild(ctx context.Context, prompt string, s orchestrat
 		InjectSkills: s.InjectSkills,
 		noTriage:     true,
 	}
+	// Gate the child on its own target files so it cannot stop until every one is
+	// written (reuses the grounding finish-gate). This is what forces a small model
+	// to actually build all its files instead of replying with text after one.
+	if len(s.Targets) > 0 {
+		req.Grounding = &Grounding{Action: "create", ExplicitTargets: s.Targets}
+	}
 	return e.a.Run(ctx, req, emit, confirm)
 }
 
@@ -137,9 +145,16 @@ func (a *Agent) runOrchestrated(ctx context.Context, req Request, emit func(even
 	if childMode == "" {
 		childMode = tools.ModeAuto
 	}
+	// Build children get a write-focused tool set: with list_dir/search/shell they
+	// explore-loop on a fresh project and never write. read/write/edit forces them
+	// to produce files. Fall back to the full set only if the parent restricted it.
+	allowed := []string{"read_file", "write_file", "edit_file"}
+	if len(req.Allowed) > 0 && len(req.Allowed) < len(allowed) {
+		allowed = req.Allowed
+	}
 	spec := orchestrator.ChildSpec{
 		WorkDir:      req.WorkDir,
-		Allowed:      req.Allowed,
+		Allowed:      allowed,
 		Sandbox:      req.Sandbox,
 		InjectSkills: req.InjectSkills,
 		Mode:         childMode,

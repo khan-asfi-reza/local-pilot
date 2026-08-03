@@ -224,6 +224,9 @@ func main() {
 		runMu.Lock()
 		defer runMu.Unlock()
 		ag.UseSessionModel(req.Model)
+		if req.WorkingDirectory != "" {
+			model.SetLogDir(filepath.Join(req.WorkingDirectory, ".pilot", "logs"))
+		}
 		ag.Run(r.Context(), agentReq, emit, confirm)
 	})
 

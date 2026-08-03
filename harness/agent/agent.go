@@ -72,7 +72,7 @@ func New(cfg *model.Config, skillsDir string) (*Agent, error) {
 		reg:           reg,
 		skills:        skills,
 		prompt:        prompt,
-		maxSteps:      25,
+		maxSteps:      200,
 		contextTokens: contextTokens,
 		log:           newAuditLog(),
 	}, nil

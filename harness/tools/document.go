@@ -47,6 +47,19 @@ func readDocumentTool() *Tool {
 	}
 }
 
+// ExtractDocument returns the plain text of a document file, for callers outside
+// tool dispatch (e.g. a docx/pdf passed as a task file).
+func ExtractDocument(path string) (string, error) { return extractDocument(path) }
+
+// IsDocument reports whether a path is an extractable document format.
+func IsDocument(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".docx", ".pdf", ".pptx", ".xlsx":
+		return true
+	}
+	return false
+}
+
 // extractDocument returns the plain text of a document by extension.
 func extractDocument(path string) (string, error) {
 	switch strings.ToLower(filepath.Ext(path)) {

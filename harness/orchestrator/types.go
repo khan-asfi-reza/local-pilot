@@ -79,6 +79,7 @@ type ChildSpec struct {
 	Allowed      []string
 	Sandbox      bool
 	InjectSkills []string
+	Targets      []string // this child's target files — gates its completion
 }
 
 type Policy struct {

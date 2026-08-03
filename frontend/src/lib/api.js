@@ -129,15 +129,34 @@ export const code = {
     });
     return (await json(res)).project;
   },
-  // createProject makes <location>/<name> on disk, writes PRD.md when a PRD was
-  // given, and registers the folder as a project.
-  async createProject({ name, location, prd = '' }) {
+  // forgetProject / clearProjects only drop registry entries — the folders and
+  // their files stay on disk, so re-opening a path brings the project back.
+  async forgetProject(id) {
+    return json(await fetch(`${BASE}/code/projects?id=${encodeURIComponent(id)}`, { method: 'DELETE' }));
+  },
+  async clearProjects() {
+    return json(await fetch(`${BASE}/code/projects`, { method: 'DELETE' }));
+  },
+  // createProject makes <location>/<name> on disk and registers the folder as a
+  // project. The brief/PRD is not written as a file — it goes to the agent as an
+  // attachment, and any uploaded source doc is kept via saveProjectDoc.
+  async createProject({ name, location }) {
     const res = await fetch(`${BASE}/code/projects/new`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, location, prd }),
+      body: JSON.stringify({ name, location }),
     });
-    return json(res); // { project, prd }
+    return json(res); // { project }
+  },
+  // saveProjectDoc keeps an uploaded source doc with the project by writing the
+  // raw bytes (base64) into <root>/.pilot/<filename>.
+  async saveProjectDoc(root, filename, contentB64) {
+    const res = await fetch(`${BASE}/code/projects/doc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ root, filename, content_b64: contentB64 }),
+    });
+    return json(res); // { ok, path }
   },
   async createEntry(root, path, type = 'file') {
     const res = await fetch(`${BASE}/code/fs/entry`, {
@@ -193,6 +212,14 @@ export const code = {
       body: JSON.stringify({ root, path, content }),
     });
     return json(res); // { ok: true }
+  },
+  // extractDocument uploads a doc (docx/pdf/pptx/xlsx/txt/md) and gets its plain
+  // text back, so it can be attached to an agent message as context.
+  async extractDocument(file) {
+    const form = new FormData();
+    form.append('file', file);
+    const res = await fetch(`${BASE}/code/extract`, { method: 'POST', body: form });
+    return json(res); // { filename, text }
   },
   // confirmAgent answers an ask-mode confirmation for a paused run. decision is
   // 'approve' | 'decline' | 'approve_always'; feedback is an optional note handed

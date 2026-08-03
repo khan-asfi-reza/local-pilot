@@ -73,7 +73,7 @@ type constrainedRequest struct {
 }
 
 type responseFormat struct {
-	Type       string     `json:"type"`
+	Type       string      `json:"type"`
 	JSONSchema schemaBlock `json:"json_schema"`
 }
 
@@ -135,7 +135,9 @@ type streamChunk struct {
 // non-nil) is called for each token as it arrives — kind "content" for the answer
 // and "reasoning" for the model's thinking — so the UI updates live. The fully
 // assembled message and total token count are returned when the stream ends.
-func (c *Client) Chat(ctx context.Context, url, model string, msgs []Message, defs []ToolDef, onDelta func(kind, text string)) (Message, int, error) {
+func (c *Client) Chat(ctx context.Context, url, model string, msgs []Message, defs []ToolDef, onDelta func(kind, text string)) (outMsg Message, outTokens int, outErr error) {
+	start := time.Now()
+	defer func() { logCall("chat", model, msgs, outMsg.Content, outMsg.ToolCalls, outTokens, start, outErr) }()
 	body := chatRequest{
 		Model:         model,
 		Messages:      msgs,
@@ -234,7 +236,9 @@ func (c *Client) Chat(ctx context.Context, url, model string, msgs []Message, de
 	return msg, tokens, nil
 }
 
-func (c *Client) CompleteConstrained(ctx context.Context, url, model string, msgs []Message, schema json.RawMessage) (string, int, error) {
+func (c *Client) CompleteConstrained(ctx context.Context, url, model string, msgs []Message, schema json.RawMessage) (outContent string, outTokens int, outErr error) {
+	start := time.Now()
+	defer func() { logCall("constrained", model, msgs, outContent, nil, outTokens, start, outErr) }()
 	body := constrainedRequest{
 		Model:          model,
 		Messages:       msgs,
