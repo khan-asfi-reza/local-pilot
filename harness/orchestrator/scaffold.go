@@ -21,18 +21,37 @@ func (o *Orchestrator) scaffold(ctx context.Context, prompt, workDir, env string
 	if detectInitialized(workDir) {
 		return loadStateText(workDir)
 	}
-	h, framework, score := lang.Detect(prompt, workDir)
-	if h == nil || score < 0 {
+	// Verdict: a multi-service app (UI + server) is scaffolded into backend/ and
+	// frontend/ subdirs; a single-service app stays flat at the root (src/).
+	plan := lang.DetectStack(prompt, workDir)
+	if plan.Empty() {
 		emit(events.Text("\n[no deterministic template matched this stack; using the model to scaffold]\n"))
 		return "" // no deterministic recipe → LLM initialize()
 	}
-	emit(events.Text("\n[scaffolding " + framework + " deterministically with its real generator]\n"))
-	res, err := h.Scaffold(ctx, lang.Req{
-		Framework: framework, WorkDir: workDir, Prompt: prompt, Env: env, Emit: emit,
-	})
-	if err != nil {
-		emit(events.Text("\n[scaffold " + framework + " failed (" + err.Error() + "); using LLM scaffold]\n"))
-		return ""
+
+	var res lang.Result
+	var err error
+	if plan.FullStack() {
+		res, err = lang.ScaffoldFullstack(ctx, lang.Req{WorkDir: workDir, Prompt: prompt, Env: env, Emit: emit}, plan)
+		if err != nil {
+			emit(events.Text("\n[full-stack scaffold failed (" + err.Error() + "); using LLM scaffold]\n"))
+			return ""
+		}
+	} else {
+		framework := plan.Backend
+		if framework == "" {
+			framework = plan.Frontend
+		}
+		h := lang.HandlerForFramework(framework)
+		if h == nil {
+			return ""
+		}
+		emit(events.Text("\n[scaffolding " + framework + " deterministically with its real generator]\n"))
+		res, err = h.Scaffold(ctx, lang.Req{Framework: framework, WorkDir: workDir, Prompt: prompt, Env: env, Emit: emit})
+		if err != nil {
+			emit(events.Text("\n[scaffold " + framework + " failed (" + err.Error() + "); using LLM scaffold]\n"))
+			return ""
+		}
 	}
 	st := State{Initialized: true, Stack: res.Stack, Project: res.Project, App: res.App,
 		Settings: res.Settings, Entry: res.Entry, Layout: res.Layout}

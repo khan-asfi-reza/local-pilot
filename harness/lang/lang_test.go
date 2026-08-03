@@ -30,6 +30,29 @@ func TestDetectByKeyword(t *testing.T) {
 	}
 }
 
+func TestDetectStackVerdict(t *testing.T) {
+	cases := []struct {
+		prompt      string
+		wantBE      string
+		wantFE      string
+		description string
+	}{
+		{"Build a marketplace: React storefront UI plus a NestJS REST API with postgres auth", "nestjs", "react", "full-stack split"},
+		{"A marketplace with a web app dashboard and a Node.js backend REST API and database", "node", "react", "full-stack, generic node+react"},
+		{"Build a Django REST API with authentication endpoints", "django", "", "backend only (monolith)"},
+		{"A React dashboard that renders charts", "", "react", "frontend only"},
+		{"A Next.js app with server actions", "", "nextjs", "nextjs is single full-stack"},
+		{"A CLI tool in golang", "go", "", "single go, no frontend"},
+	}
+	for _, c := range cases {
+		p := DetectStack(c.prompt, "")
+		if p.Backend != c.wantBE || p.Frontend != c.wantFE {
+			t.Errorf("%s: DetectStack(%q) = {be:%q fe:%q}, want {be:%q fe:%q}",
+				c.description, c.prompt, p.Backend, p.Frontend, c.wantBE, c.wantFE)
+		}
+	}
+}
+
 func TestDetectMarkerBeatsKeyword(t *testing.T) {
 	// A prompt mentioning react in a dir already carrying next.config.ts must pick
 	// nextjs (marker) — and a marker outscores any keyword-only match.

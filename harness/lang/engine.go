@@ -215,6 +215,14 @@ func whenMatches(when string, data map[string]any, prompt string) bool {
 			if v, _ := data["has_"+strings.TrimPrefix(tok, "has:")].(bool); !v {
 				return false
 			}
+		case strings.HasPrefix(tok, "!kw:"):
+			// negation: the step applies only when NONE of these keywords appear
+			// (e.g. default to Tailwind unless another UI library is named).
+			for _, alt := range strings.Split(strings.TrimPrefix(tok, "!kw:"), "|") {
+				if alt != "" && strings.Contains(low, strings.ToLower(alt)) {
+					return false
+				}
+			}
 		case strings.HasPrefix(tok, "kw:"):
 			hit := false
 			for _, alt := range strings.Split(strings.TrimPrefix(tok, "kw:"), "|") {

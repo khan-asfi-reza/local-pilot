@@ -111,6 +111,115 @@ func HandlerFor(language string) Handler {
 	return nil
 }
 
+// HandlerForFramework returns the handler that owns a framework id, or nil.
+func HandlerForFramework(framework string) Handler {
+	for _, h := range handlers {
+		for _, fw := range h.Frameworks() {
+			if fw.ID == framework {
+				return h
+			}
+		}
+	}
+	return nil
+}
+
+// StackPlan is what to scaffold: a single framework (one of Backend/Frontend set),
+// or a full-stack split (both set → backend/ + frontend/ subdirs).
+type StackPlan struct {
+	Backend  string
+	Frontend string
+}
+
+// FullStack reports whether both sides are set.
+func (p StackPlan) FullStack() bool { return p.Backend != "" && p.Frontend != "" }
+
+// Empty reports whether nothing was detected.
+func (p StackPlan) Empty() bool { return p.Backend == "" && p.Frontend == "" }
+
+var frontendIDs = map[string]bool{"nextjs": true, "react": true}
+
+// namedBackendIDs are the frameworks whose mere presence signals a real backend.
+// The generic language catches (node/go/rust/…) are excluded here so a UI spec
+// that merely says "TypeScript" is not turned into a full-stack build.
+var namedBackendIDs = map[string]bool{
+	"django": true, "fastapi": true, "flask": true, "express": true, "nestjs": true,
+	"gin": true, "fiber": true, "rails": true, "laravel": true, "spring-boot": true,
+	"axum": true, "actix": true,
+}
+
+var (
+	frontendSignal = kw(`frontend|front-end|web app|web application|dashboard|storefront|\bui\b|user interface|single[- ]page|\bspa\b|admin panel|landing page|web client|customer[- ]facing|\breact\b`)
+	backendSignal  = kw(`\brest api\b|\bapi\b|\bbackend\b|\bserver\b|endpoints?|\bdatabase\b|postgres|mysql|mongo|authentication|\bauth\b|microservice|\bcrud\b`)
+)
+
+// bestWhere returns the highest-scoring framework whose id satisfies want.
+func bestWhere(prompt, workDir string, want func(string) bool) (string, int) {
+	low := strings.ToLower(prompt)
+	var bestFW string
+	best := -1
+	for _, h := range handlers {
+		for _, fw := range h.Frameworks() {
+			if !want(fw.ID) {
+				continue
+			}
+			score := -1
+			if anyMarker(workDir, fw.Markers) {
+				score = fw.Priority + 1000
+			} else if fw.Keywords != nil && fw.Keywords.MatchString(low) {
+				score = fw.Priority
+			}
+			if score > best {
+				best, bestFW = score, fw.ID
+			}
+		}
+	}
+	return bestFW, best
+}
+
+// DetectStack decides the scaffold layout: Next.js is full-stack on its own; a
+// spec that needs both a UI and a server becomes a backend/ + frontend/ split;
+// otherwise a single framework (falling back to plain Detect for languages like
+// Go/Rust). Returns an empty plan when nothing is recognized.
+func DetectStack(prompt, workDir string) StackPlan {
+	low := strings.ToLower(prompt)
+
+	// Next.js already covers UI + API routes → single.
+	if fw, s := bestWhere(prompt, workDir, func(id string) bool { return id == "nextjs" }); s >= 0 && fw == "nextjs" {
+		return StackPlan{Frontend: "nextjs"}
+	}
+
+	fe := ""
+	if fw, s := bestWhere(prompt, workDir, func(id string) bool { return id == "react" }); s >= 0 {
+		fe = fw
+	} else if frontendSignal.MatchString(low) {
+		fe = "react"
+	}
+
+	be := ""
+	if fw, s := bestWhere(prompt, workDir, func(id string) bool { return namedBackendIDs[id] }); s >= 0 {
+		be = fw
+	} else if backendSignal.MatchString(low) {
+		be = "node"
+	}
+
+	switch {
+	case fe != "" && be != "":
+		return StackPlan{Backend: be, Frontend: fe}
+	case be != "":
+		return StackPlan{Backend: be}
+	case fe != "":
+		return StackPlan{Frontend: fe}
+	}
+	// No full-stack signal: single detection (covers go/rust/python/etc.).
+	if _, fw, s := Detect(prompt, workDir); s >= 0 {
+		if frontendIDs[fw] {
+			return StackPlan{Frontend: fw}
+		}
+		return StackPlan{Backend: fw}
+	}
+	return StackPlan{}
+}
+
 // langMarkers maps a manifest file to its language, for language-level detection
 // (install_deps) where the framework may be unknown but the language is clear.
 var langMarkers = []struct{ file, lang string }{

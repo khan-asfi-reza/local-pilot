@@ -111,8 +111,8 @@ func ensureStack() (cfgPath, name string, err error) {
 	}
 
 	name = cfg.Default
-	if name == "" || !modelInstalled(name) {
-		// first run, or the saved default is no longer installed: pick + build one.
+	if name == "" || !defaultUsable(cfg, name) {
+		// first run, or the saved default is no longer usable: pick + build one.
 		base := chooseModelBase(cfg)
 		n, e := buildAndRegister(cfgPath, cfg, base)
 		if e != nil {
@@ -991,6 +991,25 @@ func ollamaUp(url string) bool {
 
 func modelInstalled(name string) bool {
 	return exec.Command("ollama", "show", name).Run() == nil
+}
+
+// defaultUsable reports whether the configured default needs no setup at startup:
+// a REMOTE model lives on another server (never a local install, so never prompt
+// or pull for it), and a LOCAL model is checked by its ollama TAG — not its
+// registry label, which may differ (e.g. "qwen3.5:9b (192.168.10.99)").
+func defaultUsable(cfg *model.Config, name string) bool {
+	entry, ok := cfg.EntryFor(name)
+	if !ok {
+		return false
+	}
+	if entry.Host != "" {
+		return true // remote: configured deliberately; don't force a local model
+	}
+	tag := entry.Model
+	if tag == "" {
+		tag = entry.Name
+	}
+	return modelInstalled(tag)
 }
 
 // installModel pulls the base model, creates the edited <base>-tools variant,

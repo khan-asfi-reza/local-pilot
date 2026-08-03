@@ -53,7 +53,24 @@ func (javascript) Install(ctx context.Context, workDir string, pkgs []string) er
 	return runCmd(ctx, workDir, "npm", append([]string{"install"}, pkgs...))
 }
 
+// uiLibGuard makes a step apply only when the spec names NO competing UI/design
+// library, so a React/Next app with no library specified defaults to Tailwind +
+// lucide-react (one that names MUI/Chakra/etc. is left for that library).
+const uiLibGuard = "!kw:material-ui|@mui|mui|chakra|ant design|antd|bootstrap|mantine|shadcn|styled-components|styled components|emotion|bulma|daisyui|primereact|vuetify"
+
 func jsRecipe(framework string) Recipe {
+	// tailwindSteps is the default Tailwind v3 + lucide-react setup, shared by
+	// nextjs (app/globals.css) and vite (src/index.css). Tailwind v3 is pinned so
+	// the postcss plugin config stays stable.
+	tailwindSteps := func(cssPath, twConfig string) []Post {
+		return []Post{
+			{Run: &Cmd{Bin: "npm", Args: []string{"install", "-D", "tailwindcss@3", "postcss", "autoprefixer"}}, When: uiLibGuard},
+			{Run: &Cmd{Bin: "npm", Args: []string{"install", "lucide-react"}}, When: uiLibGuard},
+			{Render: twConfig, To: "tailwind.config.ts", When: uiLibGuard},
+			{Render: "js/postcss.config.mjs.tmpl", To: "postcss.config.mjs", When: uiLibGuard},
+			{Render: "js/tailwind_globals.css.tmpl", To: cssPath, When: uiLibGuard},
+		}
+	}
 	switch framework {
 	case "nextjs":
 		return Recipe{
@@ -63,9 +80,10 @@ func jsRecipe(framework string) Recipe {
 			Generate: &Cmd{Bin: "npx", Args: []string{"--yes", "create-next-app@15", ".harness_scaffold",
 				"--ts", "--app", "--use-npm", "--no-src-dir", "--no-tailwind", "--no-eslint", "--no-turbopack", "--import-alias", "@/*"}},
 			Nest: NestTempMove, Verify: "package.json",
-			Post: []Post{
-				{Render: "js/next_db.ts.tmpl", To: "lib/db.ts", When: "has:postgres"},
-			},
+			Post: append(
+				tailwindSteps("app/globals.css", "js/tailwind_next.config.ts.tmpl"),
+				Post{Render: "js/next_db.ts.tmpl", To: "lib/db.ts", When: "has:postgres"},
+			),
 			Layout: []string{"package.json", "next.config.ts", "app/page.tsx", "app/layout.tsx"},
 		}
 	case "react":
@@ -75,9 +93,10 @@ func jsRecipe(framework string) Recipe {
 			Stack: "React + Vite (TypeScript)", Entry: "npm run dev",
 			Generate: &Cmd{Bin: "npm", Args: []string{"create", "vite@latest", ".harness_scaffold", "--", "--template", "react-ts"}},
 			Nest:     NestTempMove, Verify: "package.json",
-			Post: []Post{
-				{Run: &Cmd{Bin: "npm", Args: []string{"install"}}},
-			},
+			Post: append(
+				[]Post{{Run: &Cmd{Bin: "npm", Args: []string{"install"}}}},
+				tailwindSteps("src/index.css", "js/tailwind_vite.config.ts.tmpl")...,
+			),
 			Layout: []string{"package.json", "vite.config.ts", "src/App.tsx", "index.html"},
 		}
 	case "nestjs":
