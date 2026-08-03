@@ -48,6 +48,81 @@ func (c *Client) InstalledModels(url string) ([]string, error) {
 	return names, nil
 }
 
+// PullModel downloads a model via ollama's /api/pull, streaming NDJSON progress.
+// progress (when non-nil) is called for each event with the current status and
+// byte counts, so a caller can render a download bar. It uses a client with no
+// timeout, since a large pull can take many minutes; cancel via ctx instead.
+func (c *Client) PullModel(ctx context.Context, url, name string, progress func(status string, completed, total int64)) error {
+	body, _ := json.Marshal(map[string]any{"name": name, "stream": true})
+	endpoint := strings.TrimRight(url, "/") + "/api/pull"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		return fmt.Errorf("reach backend %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("pull %s: %s: %s", name, resp.Status, strings.TrimSpace(string(b)))
+	}
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	var lastErr string
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" {
+			continue
+		}
+		var ev struct {
+			Status    string `json:"status"`
+			Total     int64  `json:"total"`
+			Completed int64  `json:"completed"`
+			Error     string `json:"error"`
+		}
+		if json.Unmarshal([]byte(line), &ev) != nil {
+			continue
+		}
+		if ev.Error != "" {
+			lastErr = ev.Error
+		}
+		if progress != nil {
+			progress(ev.Status, ev.Completed, ev.Total)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return err
+	}
+	if lastErr != "" {
+		return fmt.Errorf("pull %s: %s", name, lastErr)
+	}
+	return nil
+}
+
+// DeleteModel removes a model from ollama via /api/delete, freeing its disk.
+func (c *Client) DeleteModel(url, name string) error {
+	body, _ := json.Marshal(map[string]any{"name": name})
+	endpoint := strings.TrimRight(url, "/") + "/api/delete"
+	req, err := http.NewRequest(http.MethodDelete, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete %s: %s: %s", name, resp.Status, strings.TrimSpace(string(b)))
+	}
+	return nil
+}
+
 // Reachable reports whether a backend is up, by probing ollama's /api/version.
 func (c *Client) Reachable(url string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)

@@ -1,4 +1,4 @@
-//go:build !nots
+//go:build cgo
 
 package graph
 
@@ -19,8 +19,9 @@ import (
 	typescript "github.com/smacker/go-tree-sitter/typescript/typescript"
 )
 
-// Enabled reports whether this build has real tree-sitter parsing (vs the nots
-// stub). Callers fall back to the regex repo map when false.
+// Enabled reports whether this build has real tree-sitter parsing. It is true
+// only in a cgo build (CGO_ENABLED=1 with a C compiler); otherwise the stub in
+// binding_stub.go is compiled and callers fall back to the regex repo map.
 func Enabled() bool { return true }
 
 // grammarByLang binds each language name to its tree-sitter grammar.

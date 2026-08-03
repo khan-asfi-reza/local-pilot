@@ -9,7 +9,13 @@ import (
 )
 
 type ModelEntry struct {
-	Name     string `json:"name"`
+	// Name is the unique registry key AND the label shown to the user. It is NOT
+	// necessarily the ollama tag: two servers can host the same tag under distinct
+	// labels (e.g. "qwen3.5:9b" and "qwen3.5:9b (192.168.10.99)").
+	Name string `json:"name"`
+	// Model is the ollama tag actually sent to the backend. Empty means Name is the
+	// tag (the common case, and back-compatible with older configs).
+	Model    string `json:"model,omitempty"`
 	File     string `json:"file,omitempty"`
 	Port     int    `json:"port"`
 	ToolMode string `json:"tool_mode,omitempty"`
@@ -83,6 +89,90 @@ func (c *Config) AddModel(e ModelEntry) {
 		}
 	}
 	c.Models = append(c.Models, e)
+}
+
+// Remove drops a model from the registry and reassigns Default/DefaultPlanner/
+// active if they pointed at it. It refuses to remove the last model, since the
+// config must always keep at least one with a valid default.
+func (c *Config) Remove(name string) error {
+	idx := -1
+	for i, m := range c.Models {
+		if m.Name == name {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("unknown model %q; configured models are %v", name, c.Names())
+	}
+	if len(c.Models) == 1 {
+		return fmt.Errorf("cannot remove the only model %q; add another first", name)
+	}
+	c.Models = append(c.Models[:idx], c.Models[idx+1:]...)
+	fallback := c.Models[0].Name
+	if c.Default == name {
+		c.Default = fallback
+	}
+	if c.DefaultPlanner == name {
+		c.DefaultPlanner = ""
+	}
+	if c.active == name {
+		if c.Default != "" {
+			c.active = c.Default
+		} else {
+			c.active = fallback
+		}
+	}
+	return nil
+}
+
+// EntryFor returns the registered entry for a name (for callers outside this
+// package that need the model's host/base/port).
+func (c *Config) EntryFor(name string) (ModelEntry, bool) { return c.entry(name) }
+
+// TagFor returns the ollama tag to send for a registry name — the entry's Model
+// if set, otherwise the name itself (so plain single-host configs are unchanged).
+func (c *Config) TagFor(name string) string {
+	if e, ok := c.entry(name); ok && e.Model != "" {
+		return e.Model
+	}
+	return name
+}
+
+// DeriveName picks a unique registry label for an ollama tag on a host: the bare
+// tag when free, else disambiguated by the host (a remote's hostname, or "local"
+// when the bare tag is already taken by another server), with a numeric fallback.
+func (c *Config) DeriveName(tag, host string) string {
+	taken := map[string]bool{}
+	for _, n := range c.Names() {
+		taken[n] = true
+	}
+	if !taken[tag] {
+		return tag
+	}
+	suffix := "local"
+	if h := strings.TrimSpace(host); h != "" {
+		suffix = hostLabel(h)
+	}
+	if cand := tag + " (" + suffix + ")"; !taken[cand] {
+		return cand
+	}
+	for i := 2; ; i++ {
+		if cand := fmt.Sprintf("%s (%s %d)", tag, suffix, i); !taken[cand] {
+			return cand
+		}
+	}
+}
+
+// hostLabel reduces a host to a bare hostname/IP for a disambiguating label.
+func hostLabel(h string) string {
+	h = NormalizeHost(h)
+	h = strings.TrimPrefix(h, "http://")
+	h = strings.TrimPrefix(h, "https://")
+	if i := strings.IndexByte(h, ':'); i >= 0 {
+		h = h[:i]
+	}
+	return h
 }
 
 // Save writes the registry back to path as indented JSON.

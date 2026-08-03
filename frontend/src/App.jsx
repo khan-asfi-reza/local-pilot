@@ -4,6 +4,7 @@ import { Home } from './features/home/Home';
 import { ChatWindow } from './components/chat/ChatWindow';
 import { Builder } from './features/builder/Builder';
 import { CodePage } from './features/code/CodePage';
+import { SettingsPage } from './features/settings/SettingsPage';
 import { Onboarding } from './features/onboarding/Onboarding';
 import { profile as profileApi } from './lib/api';
 
@@ -26,6 +27,7 @@ export default function App() {
         <Route path="/builder/:projectId" element={<Builder />} />
         <Route path="/code" element={<CodePage />} />
         <Route path="/code/:projectId" element={<CodePage />} />
+        <Route path="/settings" element={<SettingsPage />} />
       </Routes>
 
       {needsOnboarding && <Onboarding onDone={() => setNeedsOnboarding(false)} />}

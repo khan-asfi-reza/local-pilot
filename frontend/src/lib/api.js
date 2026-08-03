@@ -346,3 +346,78 @@ export const telegram = {
     await fetch(`${BASE}/telegram/link/${chatId}`, { method: 'DELETE' });
   },
 };
+
+// models is the Settings model-management API group. list() is the registered
+// models + default; available() is ollama-installed tags not yet registered (for
+// the add autocomplete); add/remove/activate mutate the registry; pull() streams
+// a download's NDJSON progress. All but list/available are admin (localhost + same-site).
+export const models = {
+  async list() {
+    return json(await fetch(`${BASE}/models`)); // { models:[{name,ready,url,active}], default }
+  },
+  async available() {
+    return json(await fetch(`${BASE}/models/available`)); // { available:[name] }
+  },
+  // add registers an installed ollama tag `model`. opts.host targets a remote
+  // server (blank = local); opts.name is an optional display label (a unique one
+  // is derived when blank, so the same tag on two servers never collides).
+  async add(model, { host = '', name = '' } = {}) {
+    const res = await fetch(`${BASE}/models`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, host, name }),
+    });
+    return json(res);
+  },
+  async remove(name) {
+    const res = await fetch(`${BASE}/models/remove`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    return json(res);
+  },
+  async activate(name) {
+    const res = await fetch(`${BASE}/models/activate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    return json(res);
+  },
+  // pull downloads a NEW model, calling onProgress({status,completed,total}) per
+  // NDJSON line, and resolves with the final { done, models } event.
+  async pull(name, onProgress) {
+    const res = await fetch(`${BASE}/models/pull`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    if (!res.ok || !res.body) throw new Error(`pull failed (${res.status})`);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let final = null;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      let nl;
+      while ((nl = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, nl).trim();
+        buffer = buffer.slice(nl + 1);
+        if (!line) continue;
+        let ev;
+        try {
+          ev = JSON.parse(line);
+        } catch {
+          continue;
+        }
+        if (ev.error) throw new Error(ev.error);
+        if (ev.done) final = ev;
+        else if (onProgress) onProgress(ev);
+      }
+    }
+    return final;
+  },
+};

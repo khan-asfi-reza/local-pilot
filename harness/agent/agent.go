@@ -4,8 +4,11 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 
 	"harness/harness/model"
@@ -138,7 +141,7 @@ func (a *Agent) Models() []ModelStatus {
 		out = append(out, ModelStatus{
 			Name:    name,
 			URL:     url,
-			Running: set[name],
+			Running: set[a.cfg.TagFor(name)],
 			Active:  name == active,
 		})
 	}
@@ -200,4 +203,156 @@ func (a *Agent) UseModel(name string) error {
 	}
 	a.cfg.Default = name
 	return a.cfg.Save(filepath.Join(a.cfg.Dir(), "models.json"))
+}
+
+// modelsPath is the on-disk registry the model-management methods persist to.
+func (a *Agent) modelsPath() string { return filepath.Join(a.cfg.Dir(), "models.json") }
+
+// modelHosts returns the distinct backend URLs the registry uses (plus the
+// active one), so installed-model queries cover every server in play.
+func (a *Agent) modelHosts() []string {
+	seen := map[string]bool{}
+	var hosts []string
+	add := func(name string) {
+		if url, ok := a.cfg.URLFor(name); ok && !seen[url] {
+			seen[url] = true
+			hosts = append(hosts, url)
+		}
+	}
+	for _, name := range a.cfg.Names() {
+		add(name)
+	}
+	add(a.cfg.ActiveName())
+	return hosts
+}
+
+// AvailableModels returns ollama-installed model tags that are NOT yet registered
+// ON THEIR HOST — the source for an "add model" autocomplete. A tag registered on
+// one server is still offered for another (that is the whole point of decoupling
+// the label from the tag), so a local copy of a remote model can be added.
+func (a *Agent) AvailableModels() []string {
+	registeredHostTag := map[string]bool{}
+	for _, name := range a.cfg.Names() {
+		if url, ok := a.cfg.URLFor(name); ok {
+			registeredHostTag[url+"|"+a.cfg.TagFor(name)] = true
+		}
+	}
+	added := map[string]bool{}
+	var out []string
+	for _, url := range a.modelHosts() {
+		for _, tag := range a.router.InstalledModelsAt(url) {
+			if registeredHostTag[url+"|"+tag] || added[tag] {
+				continue
+			}
+			added[tag] = true
+			out = append(out, tag)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// RegisterInstalled adds an already-installed ollama model to the registry
+// (native tool-calls). modelTag is the ollama tag; host is optional (a remote
+// server URL, empty = local); name is an optional display label (a unique one is
+// derived when blank, so the same tag on two servers never collides). It verifies
+// the tag is installed on that host before registering.
+func (a *Agent) RegisterInstalled(modelTag, host, name string) error {
+	modelTag = strings.TrimSpace(modelTag)
+	if modelTag == "" {
+		return fmt.Errorf("model tag is required")
+	}
+	url := "http://localhost:11434"
+	entry := model.ModelEntry{ToolMode: model.ToolModeNative, Port: 11434}
+	if h := strings.TrimSpace(host); h != "" {
+		url = model.NormalizeHost(h)
+		entry.Host = url
+		entry.Port = 0
+	}
+	installed := false
+	for _, t := range a.router.InstalledModelsAt(url) {
+		if t == modelTag {
+			installed = true
+			break
+		}
+	}
+	if !installed {
+		return fmt.Errorf("%q is not installed on %s; pull it first", modelTag, url)
+	}
+	regName := strings.TrimSpace(name)
+	if regName == "" {
+		regName = a.cfg.DeriveName(modelTag, host)
+	}
+	for _, n := range a.cfg.Names() {
+		if n == regName {
+			return fmt.Errorf("the name %q is already in use; choose another", regName)
+		}
+	}
+	entry.Name = regName
+	if regName != modelTag {
+		entry.Model = modelTag // label differs from the tag → record the real tag
+	}
+	a.cfg.AddModel(entry)
+	return a.cfg.Save(a.modelsPath())
+}
+
+// PullModel downloads a model on the local backend, streaming progress through
+// emit. It does NOT touch the registry — call RegisterInstalled after it
+// succeeds (under the caller's lock), so a long download never blocks runs.
+func (a *Agent) PullModel(ctx context.Context, name string, emit func(status string, completed, total int64)) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("model name is required")
+	}
+	return a.router.PullModel(ctx, name, emit)
+}
+
+// RemoveModel drops a model from the registry and deletes it from ollama to free
+// disk (local models only; a remote model's files are not ours to delete).
+func (a *Agent) RemoveModel(name string) error {
+	entry, ok := a.cfg.EntryFor(name)
+	url, _ := a.cfg.URLFor(name)
+	if err := a.cfg.Remove(name); err != nil {
+		return err
+	}
+	if err := a.cfg.Save(a.modelsPath()); err != nil {
+		return err
+	}
+	// Free disk for a local model: delete its ollama tag (and the base it derived
+	// from, for a -tools variant). A remote model lives on someone else's server.
+	// Skip deletion if another registry entry still points at the same tag on the
+	// same host, so removing one label never pulls the model out from under another.
+	if ok && entry.Host == "" && url != "" {
+		tag := entry.Model
+		if tag == "" {
+			tag = entry.Name
+		}
+		if !a.tagStillUsed(url, tag) {
+			_ = a.router.DeleteModelAt(url, tag)
+		}
+		if base := entry.Base; base != "" && base != tag && !a.tagStillUsed(url, base) {
+			_ = a.router.DeleteModelAt(url, base)
+		}
+	}
+	return nil
+}
+
+// tagStillUsed reports whether any remaining registry entry uses this ollama tag
+// on this host — so its files must not be deleted.
+func (a *Agent) tagStillUsed(url, tag string) bool {
+	for _, n := range a.cfg.Names() {
+		if u, ok := a.cfg.URLFor(n); ok && u == url && a.cfg.TagFor(n) == tag {
+			return true
+		}
+	}
+	return false
+}
+
+// SetDefaultModel makes a registered model the persistent default (and active).
+func (a *Agent) SetDefaultModel(name string) error {
+	if err := a.cfg.SetActive(name); err != nil {
+		return err
+	}
+	a.cfg.Default = name
+	return a.cfg.Save(a.modelsPath())
 }

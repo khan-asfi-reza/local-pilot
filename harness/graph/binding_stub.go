@@ -1,11 +1,13 @@
-//go:build nots
+//go:build !cgo
 
 package graph
 
 import "context"
 
-// Enabled reports false in a pure-Go (CGO_ENABLED=0) build compiled with the
-// `nots` tag: no tree-sitter, so callers use the regex repo map instead.
+// Enabled reports false in a pure-Go build (CGO disabled, e.g. Windows without a
+// C compiler): no tree-sitter, so callers use the regex repo map instead. The
+// split is on the `cgo` build tag, so the correct implementation is chosen
+// automatically from whether CGO is available — no manual build flag needed.
 func Enabled() bool { return false }
 
 type stubParser struct{}

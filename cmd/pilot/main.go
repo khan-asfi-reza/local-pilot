@@ -513,7 +513,7 @@ func ensureOllamaInstalled() error {
 // modelsCmd handles `pilot models add|list|set-default`.
 func modelsCmd(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: pilot models <add <model> [--host URL] | list | set-default [name]>")
+		return fmt.Errorf("usage: pilot models <add <model> [--host URL] [--name LABEL] | remove <name> | list | set-default [name]>")
 	}
 	cfgPath, err := appdir.Ensure()
 	if err != nil {
@@ -525,12 +525,12 @@ func modelsCmd(args []string) error {
 	}
 	switch args[0] {
 	case "add":
-		base, host := parseAddArgs(args[1:])
+		base, host, name := parseAddArgs(args[1:])
 		if base == "" {
-			return fmt.Errorf("usage: pilot models add <ollama-model> [--host URL]")
+			return fmt.Errorf("usage: pilot models add <ollama-model> [--host URL] [--name LABEL]")
 		}
 		if host != "" {
-			return addRemoteModel(cfgPath, cfg, base, host)
+			return addRemoteModel(cfgPath, cfg, base, host, name)
 		}
 		if err := ensureOllama("http://localhost:11434", desiredContextLength(cfg)); err != nil {
 			return err
@@ -541,6 +541,12 @@ func modelsCmd(args []string) error {
 		}
 		fmt.Println(green("✓ ") + fmt.Sprintf("added %s. Use it with %s", bold(name), cyan("/model "+name)))
 		return nil
+	case "remove", "rm":
+		name := ""
+		if len(args) >= 2 {
+			name = args[1]
+		}
+		return removeModel(cfgPath, cfg, name)
 	case "list":
 		return modelsList(cfg)
 	case "set-default":
@@ -556,8 +562,44 @@ func modelsCmd(args []string) error {
 		}
 		return setDefaultPlanner(cfgPath, cfg, name)
 	default:
-		return fmt.Errorf("unknown: pilot models %s (try add, list, set-default, or set-default-planner)", args[0])
+		return fmt.Errorf("unknown: pilot models %s (try add, remove, list, set-default, or set-default-planner)", args[0])
 	}
+}
+
+// removeModel drops a model from the registry and, for a local model, deletes it
+// from ollama to free disk (a remote model lives on another server). It reassigns
+// the default/active if they pointed at the removed model, so the next start is
+// clean.
+func removeModel(cfgPath string, cfg *model.Config, name string) error {
+	if name == "" {
+		choices := cfg.Names()
+		if len(choices) <= 1 {
+			return fmt.Errorf("usage: pilot models remove <name>")
+		}
+		name = selectModel(choices, cfg.Default)
+		if name == "" {
+			return fmt.Errorf("no model selected")
+		}
+	}
+	entry, ok := cfg.EntryFor(name)
+	if !ok {
+		return fmt.Errorf("%q is not a configured model. See %s", name, cyan("pilot models list"))
+	}
+	if err := cfg.Remove(name); err != nil {
+		return err
+	}
+	if err := cfg.Save(cfgPath); err != nil {
+		return err
+	}
+	fmt.Println(green("✓ ") + "removed " + bold(name) + " from the registry")
+	if entry.Host == "" {
+		fmt.Println(dim("… deleting ollama model ") + entry.Name)
+		_ = stream("ollama", "rm", entry.Name)
+		if base := entry.Base; base != "" && base != entry.Name {
+			_ = stream("ollama", "rm", base)
+		}
+	}
+	return nil
 }
 
 // contextCmd shows or sets the ollama context window. With no argument it prints
@@ -634,7 +676,7 @@ func contextCmd(args []string) error {
 }
 
 // parseAddArgs pulls the model name and optional --host URL out of add's args.
-func parseAddArgs(rest []string) (base, host string) {
+func parseAddArgs(rest []string) (base, host, name string) {
 	for i := 0; i < len(rest); i++ {
 		switch {
 		case rest[i] == "--host" && i+1 < len(rest):
@@ -642,29 +684,47 @@ func parseAddArgs(rest []string) (base, host string) {
 			i++
 		case strings.HasPrefix(rest[i], "--host="):
 			host = strings.TrimPrefix(rest[i], "--host=")
+		case rest[i] == "--name" && i+1 < len(rest):
+			name = rest[i+1]
+			i++
+		case strings.HasPrefix(rest[i], "--name="):
+			name = strings.TrimPrefix(rest[i], "--name=")
 		case !strings.HasPrefix(rest[i], "-") && base == "":
 			base = rest[i]
 		}
 	}
-	return base, host
+	return base, host, name
 }
 
 // addRemoteModel registers a model that lives on another ollama server on the
-// network. It verifies the model exists there; it does not pull or create.
-func addRemoteModel(cfgPath string, cfg *model.Config, name, host string) error {
+// network. It verifies the model exists there; it does not pull or create. The
+// registry label is disambiguated from any same-tag local model (or an explicit
+// --name), and the real ollama tag is stored in Model so both can be used.
+func addRemoteModel(cfgPath string, cfg *model.Config, tag, host, name string) error {
 	url := model.NormalizeHost(host)
 	inst, err := model.NewClient().InstalledModels(url)
 	if err != nil {
 		return fmt.Errorf("cannot reach ollama at %s: %w", url, err)
 	}
-	if !contains(inst, name) {
-		return fmt.Errorf("%q is not installed on %s. Models there: %s", name, url, strings.Join(inst, ", "))
+	if !contains(inst, tag) {
+		return fmt.Errorf("%q is not installed on %s. Models there: %s", tag, url, strings.Join(inst, ", "))
 	}
-	cfg.AddModel(model.ModelEntry{Name: name, Host: url, ToolMode: toolModeFor(name)})
+	regName := strings.TrimSpace(name)
+	if regName == "" {
+		regName = cfg.DeriveName(tag, host)
+	}
+	if registered(cfg, regName) {
+		return fmt.Errorf("the name %q is already in use; pass a different --name", regName)
+	}
+	entry := model.ModelEntry{Name: regName, Host: url, ToolMode: toolModeFor(tag)}
+	if regName != tag {
+		entry.Model = tag
+	}
+	cfg.AddModel(entry)
 	if err := cfg.Save(cfgPath); err != nil {
 		return err
 	}
-	fmt.Println(green("✓ ") + fmt.Sprintf("added %s from %s. Use it with %s", bold(name), url, cyan("/model "+name)))
+	fmt.Println(green("✓ ") + fmt.Sprintf("added %s (%s on %s). Use it with %s", bold(regName), tag, url, cyan("/model "+regName)))
 	return nil
 }
 

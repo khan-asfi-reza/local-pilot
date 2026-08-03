@@ -110,10 +110,9 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// GET /models lists the configured models with readiness and the default, so
-	// a client can offer a model picker.
-	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
-		reloadIfChanged()
+	// modelListJSON is the registered-models payload shared by the list/add/remove/
+	// activate endpoints.
+	modelListJSON := func() map[string]any {
 		type modelJSON struct {
 			Name   string `json:"name"`
 			Ready  bool   `json:"ready"`
@@ -124,8 +123,165 @@ func main() {
 		for _, m := range ag.Models() {
 			list = append(list, modelJSON{Name: m.Name, Ready: m.Running, URL: m.URL, Active: m.Active})
 		}
+		return map[string]any{"models": list, "default": ag.DefaultModel()}
+	}
+
+	// adminOK gates the model-management endpoints: they change server config
+	// (add/remove/pull/activate), so honor them only for a local IDE client, never
+	// a LAN host or a browser cross-site request — the same rule as full_access.
+	adminOK := func(w http.ResponseWriter, r *http.Request) bool {
+		if !isLoopback(r) || browserCrossSite(r) {
+			http.Error(w, "model management is restricted to local IDE clients", http.StatusForbidden)
+			return false
+		}
+		return true
+	}
+	writeJSON := func(w http.ResponseWriter, v any) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{"models": list, "default": ag.DefaultModel()})
+		_ = json.NewEncoder(w).Encode(v)
+	}
+
+	// GET /models lists the configured models; POST /models registers an already-
+	// installed ollama model (autocomplete-driven "add").
+	mux.HandleFunc("/models", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodGet:
+			reloadIfChanged()
+			writeJSON(w, modelListJSON())
+		case http.MethodPost:
+			if !adminOK(w, r) {
+				return
+			}
+			var body struct {
+				Model string `json:"model"`
+				Host  string `json:"host"`
+				Name  string `json:"name"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			runMu.Lock()
+			err := ag.RegisterInstalled(body.Model, body.Host, body.Name)
+			runMu.Unlock()
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, modelListJSON())
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	// GET /models/available lists ollama-installed tags not yet registered, for the
+	// add-model autocomplete.
+	mux.HandleFunc("/models/available", func(w http.ResponseWriter, r *http.Request) {
+		if !adminOK(w, r) {
+			return
+		}
+		runMu.Lock()
+		avail := ag.AvailableModels()
+		runMu.Unlock()
+		writeJSON(w, map[string]any{"available": avail})
+	})
+
+	// POST /models/pull downloads a NEW model, streaming NDJSON progress, then
+	// registers it. The download runs WITHOUT runMu so it never blocks runs; only
+	// the quick register step takes the lock.
+	mux.HandleFunc("/models/pull", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		if !adminOK(w, r) {
+			return
+		}
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-ndjson")
+		enc := json.NewEncoder(w)
+		emit := func(status string, completed, total int64) {
+			_ = enc.Encode(map[string]any{"status": status, "completed": completed, "total": total})
+			flusher.Flush()
+		}
+		if err := ag.PullModel(r.Context(), body.Name, emit); err != nil {
+			_ = enc.Encode(map[string]any{"error": err.Error()})
+			flusher.Flush()
+			return
+		}
+		runMu.Lock()
+		regErr := ag.RegisterInstalled(body.Name, "", "")
+		runMu.Unlock()
+		if regErr != nil {
+			_ = enc.Encode(map[string]any{"error": regErr.Error()})
+		} else {
+			_ = enc.Encode(map[string]any{"done": true, "models": modelListJSON()["models"]})
+		}
+		flusher.Flush()
+	})
+
+	// POST /models/remove drops a model from the registry and deletes it from
+	// ollama to free disk.
+	mux.HandleFunc("/models/remove", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		if !adminOK(w, r) {
+			return
+		}
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		runMu.Lock()
+		err := ag.RemoveModel(body.Name)
+		runMu.Unlock()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, modelListJSON())
+	})
+
+	// POST /models/activate sets the persistent default (and active) model.
+	mux.HandleFunc("/models/activate", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "POST only", http.StatusMethodNotAllowed)
+			return
+		}
+		if !adminOK(w, r) {
+			return
+		}
+		var body struct {
+			Name string `json:"name"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		runMu.Lock()
+		err := ag.SetDefaultModel(body.Name)
+		runMu.Unlock()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writeJSON(w, modelListJSON())
 	})
 
 	mux.HandleFunc("/run", func(w http.ResponseWriter, r *http.Request) {

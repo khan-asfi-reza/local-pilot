@@ -23,6 +23,52 @@ async def list_models() -> dict:
         return response.json()
 
 
+async def available_models() -> dict:
+    """Ollama-installed model tags not yet registered, for the add autocomplete."""
+    async with httpx.AsyncClient(timeout=15) as client:
+        response = await client.get(harness_base() + "/models/available")
+        response.raise_for_status()
+        return response.json()
+
+
+async def add_model(model: str, host: str = "", name: str = "") -> dict:
+    """Register an already-installed model (tag `model` on `host`, labeled `name`);
+    returns the updated model list."""
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            harness_base() + "/models", json={"model": model, "host": host, "name": name}
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def remove_model(name: str) -> dict:
+    """Remove a model from the registry and ollama; returns the updated list."""
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(harness_base() + "/models/remove", json={"name": name})
+        response.raise_for_status()
+        return response.json()
+
+
+async def activate_model(name: str) -> dict:
+    """Set the persistent default model; returns the updated list."""
+    async with httpx.AsyncClient(timeout=10) as client:
+        response = await client.post(harness_base() + "/models/activate", json={"name": name})
+        response.raise_for_status()
+        return response.json()
+
+
+async def pull_model(name: str) -> AsyncIterator[dict]:
+    """Pull a new model, yielding NDJSON progress events (status/completed/total)."""
+    async with httpx.AsyncClient(timeout=None) as client:
+        async with client.stream("POST", harness_base() + "/models/pull", json={"name": name}) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if not line.strip():
+                    continue
+                yield json.loads(line)
+
+
 async def stream_harness_turn(messages: list[dict], working_directory: str | None = None, model: str | None = None) -> AsyncIterator[dict]:
     payload = {
         "messages": messages,

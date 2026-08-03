@@ -22,7 +22,7 @@ func (r *Router) Constrained(ctx context.Context, msgs []Message, schema json.Ra
 	if err != nil {
 		return "", 0, err
 	}
-	return r.client.CompleteConstrained(ctx, url, name, msgs, schema)
+	return r.client.CompleteConstrained(ctx, url, r.cfg.TagFor(name), msgs, schema)
 }
 
 // Chat forwards a native tool-calling turn to the active model, streaming tokens
@@ -32,7 +32,7 @@ func (r *Router) Chat(ctx context.Context, msgs []Message, defs []ToolDef, onDel
 	if err != nil {
 		return Message{}, 0, err
 	}
-	return r.client.Chat(ctx, url, name, msgs, defs, onDelta)
+	return r.client.Chat(ctx, url, r.cfg.TagFor(name), msgs, defs, onDelta)
 }
 
 // ChatWith runs a native tool-calling turn on a SPECIFIC model (not the active
@@ -43,7 +43,7 @@ func (r *Router) ChatWith(ctx context.Context, modelName string, msgs []Message,
 	if !ok {
 		return r.Chat(ctx, msgs, defs, onDelta)
 	}
-	return r.client.Chat(ctx, url, modelName, msgs, defs, onDelta)
+	return r.client.Chat(ctx, url, r.cfg.TagFor(modelName), msgs, defs, onDelta)
 }
 
 // PlannerName returns the configured planner model (or the active model).
@@ -75,3 +75,15 @@ func (r *Router) InstalledModelsAt(url string) []string {
 	}
 	return names
 }
+
+// PullModel downloads a model on the active backend, streaming progress.
+func (r *Router) PullModel(ctx context.Context, name string, progress func(status string, completed, total int64)) error {
+	_, url, err := r.cfg.Active()
+	if err != nil {
+		return err
+	}
+	return r.client.PullModel(ctx, url, name, progress)
+}
+
+// DeleteModelAt removes a model from the ollama backend at a specific URL.
+func (r *Router) DeleteModelAt(url, name string) error { return r.client.DeleteModel(url, name) }

@@ -21,13 +21,17 @@ export function guessLang(code) {
 }
 
 // humanizeModel turns an ollama tag into a friendly label, e.g.
-// "qwen3.5:4b-tools" -> "Qwen3.5:4Billion". The -tools suffix is dropped.
+// "qwen3.5:4b-tools" -> "Qwen3.5:4Billion". The -tools suffix is dropped, and a
+// disambiguating "(host)" label (for the same tag on two servers) is preserved.
 export function humanizeModel(name) {
   if (!name) return '';
-  const base = name.replace(/-tools$/i, '');
+  const paren = name.indexOf(' (');
+  const core = paren >= 0 ? name.slice(0, paren) : name;
+  const suffix = paren >= 0 ? ' ' + name.slice(paren + 1) : ''; // "(192.168.10.99)"
+  const base = core.replace(/-tools$/i, '');
   const [family, size] = base.split(':');
   const fam = family ? family.charAt(0).toUpperCase() + family.slice(1) : base;
-  if (!size) return fam;
+  if (!size) return fam + suffix;
   const human = size.replace(/b$/i, 'Billion').replace(/m$/i, 'Million');
-  return `${fam}:${human}`;
+  return `${fam}:${human}${suffix}`;
 }
