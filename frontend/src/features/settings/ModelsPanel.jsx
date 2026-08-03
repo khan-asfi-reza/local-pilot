@@ -4,9 +4,16 @@ import { models as modelsApi } from '../../lib/api';
 import { humanizeModel } from '../../lib/utils';
 import { Button } from '../../components/ui/button';
 import { Combobox } from '../../components/ui/Combobox';
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog';
 
 const inputClass =
   'w-full rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm text-zinc-100 outline-none focus:border-zinc-600 placeholder:text-zinc-600';
+// A restrained pill that blooms into the brand gradient on hover, matching the
+// Home cards — instead of a heavy solid block.
+const usePill =
+  'inline-flex h-8 items-center rounded-full border border-zinc-700/70 px-3.5 text-xs font-medium text-zinc-300 transition-all hover:border-transparent hover:bg-gradient-to-br hover:from-emerald-500 hover:to-teal-600 hover:text-white hover:shadow-glow disabled:opacity-40';
+const iconBtn =
+  'flex h-8 w-8 items-center justify-center rounded-full text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-red-400 disabled:opacity-40';
 
 // hostOf extracts a display host from a backend URL, or '' when it's local.
 function hostOf(url) {
@@ -28,6 +35,7 @@ export function ModelsPanel() {
   const [busy, setBusy] = useState(false);
   const [pull, setPull] = useState(null); // { name, pct, status }
   const [error, setError] = useState('');
+  const [confirm, setConfirm] = useState(null); // { title, body, onConfirm }
 
   async function refresh() {
     try {
@@ -98,11 +106,17 @@ export function ModelsPanel() {
   }
 
   function onRemove(m) {
-    const msg = hostOf(m.url)
-      ? `Remove ${humanizeModel(m.name)} from the registry?`
-      : `Remove ${humanizeModel(m.name)} and delete it from disk?`;
-    if (!window.confirm(msg)) return;
-    run(() => modelsApi.remove(m.name));
+    const local = !hostOf(m.url);
+    setConfirm({
+      title: `Remove ${humanizeModel(m.name)}?`,
+      body: local
+        ? 'This also deletes the model from disk to free up space.'
+        : 'This unregisters the remote model; its files on the other server are left untouched.',
+      onConfirm: () => {
+        setConfirm(null);
+        run(() => modelsApi.remove(m.name));
+      },
+    });
   }
 
   // Remote adds can't be pulled from here; local installed tags register directly;
@@ -146,23 +160,28 @@ export function ModelsPanel() {
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {m.name === def ? (
-                  <span className="flex items-center gap-1 text-xs text-emerald-400">
+                  <span className="flex items-center gap-1 text-xs font-medium text-emerald-400">
                     <Check size={14} /> In use
                   </span>
                 ) : (
-                  <Button size="sm" onClick={() => run(() => modelsApi.activate(m.name))} disabled={busy}>
+                  <button
+                    type="button"
+                    className={usePill}
+                    onClick={() => run(() => modelsApi.activate(m.name))}
+                    disabled={busy}
+                  >
                     Use
-                  </Button>
+                  </button>
                 )}
-                <Button
-                  size="sm"
-                  variant="outline"
+                <button
+                  type="button"
+                  className={iconBtn}
                   onClick={() => onRemove(m)}
                   disabled={busy}
                   title="Remove"
                 >
                   <Trash2 size={14} />
-                </Button>
+                </button>
               </div>
             </div>
           );
@@ -228,6 +247,16 @@ export function ModelsPanel() {
       </div>
 
       {error && <p className="text-xs text-red-400">{error}</p>}
+
+      <ConfirmDialog
+        open={!!confirm}
+        title={confirm?.title}
+        body={confirm?.body}
+        confirmLabel="Remove"
+        destructive
+        onConfirm={confirm?.onConfirm}
+        onCancel={() => setConfirm(null)}
+      />
     </div>
   );
 }

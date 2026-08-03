@@ -18,11 +18,21 @@ func (javascript) Frameworks() []Framework {
 		{ID: "nextjs", Priority: 60, Keywords: kw(`next\.?js`), Markers: []Marker{
 			{File: "next.config.js"}, {File: "next.config.mjs"}, {File: "next.config.ts"}, {File: "package.json", Contains: "\"next\""},
 		}},
+		{ID: "nestjs", Priority: 45, Keywords: kw(`nest\.?js|@nestjs`), Markers: []Marker{
+			{File: "nest-cli.json"}, {File: "package.json", Contains: "@nestjs/core"},
+		}},
 		{ID: "express", Priority: 30, Keywords: kw(`\bexpress(\.js)?\b`), Markers: []Marker{
 			{File: "package.json", Contains: "\"express\""},
 		}},
 		{ID: "react", Priority: 10, Keywords: kw(`\breact\b|\bjsx\b|\bvite\b`), Markers: []Marker{
 			{File: "package.json", Contains: "\"react\""},
+		}},
+		// Generic Node/TypeScript catch: fires for a Node backend / REST API that
+		// names no specific framework, so it still gets a real npm-installed skeleton
+		// instead of the model hand-writing one. Lowest priority so a named framework
+		// always wins.
+		{ID: "node", Priority: 3, Keywords: kw(`\bnode(\.?js)?\b|\btypescript\b|\brest api\b|\bapi server\b|\bbackend\b`), Markers: []Marker{
+			{File: "tsconfig.json"},
 		}},
 	}
 }
@@ -70,18 +80,33 @@ func jsRecipe(framework string) Recipe {
 			},
 			Layout: []string{"package.json", "vite.config.ts", "src/App.tsx", "index.html"},
 		}
-	default: // express — template-only skeleton, then a real npm install
+	case "nestjs":
 		return Recipe{
-			Framework: "express", Requires: []string{"node", "npm"}, Timeout: 240 * time.Second,
-			Project: "api", App: "api", Settings: "index.js",
-			Stack: "Express (Node.js)", Entry: "node index.js",
+			Framework: "nestjs", Requires: []string{"node", "npm", "npx"}, Timeout: 600 * time.Second,
+			Project: "api", App: "api", Settings: "src/app.module.ts",
+			Stack: "NestJS (TypeScript)", Entry: "npm run start:dev",
+			Generate: &Cmd{Bin: "npx", Args: []string{"--yes", "@nestjs/cli@latest", "new", ".harness_scaffold",
+				"--package-manager", "npm", "--skip-git"}},
+			Nest: NestTempMove, Verify: "package.json",
+			Layout: []string{"package.json", "src/main.ts", "src/app.module.ts", "src/app.controller.ts"},
+		}
+	default: // express (TS) and the generic node catch share a TS skeleton + npm install
+		stack := "Express (TypeScript)"
+		if framework == "node" {
+			stack = "Node.js + TypeScript"
+		}
+		return Recipe{
+			Framework: framework, Requires: []string{"node", "npm"}, Timeout: 300 * time.Second,
+			Project: "api", App: "api", Settings: "src/index.ts",
+			Stack: stack, Entry: "npm run dev",
 			Post: []Post{
-				{Render: "js/express_package.json.tmpl", To: "package.json"},
-				{Render: "js/express_index.js.tmpl", To: "index.js"},
-				{Render: "js/express_db.js.tmpl", To: "db.js", When: "has:postgres"},
+				{Render: "js/ts_package.json.tmpl", To: "package.json"},
+				{Render: "js/tsconfig.json.tmpl", To: "tsconfig.json"},
+				{Render: "js/express_index.ts.tmpl", To: "src/index.ts"},
+				{Render: "js/express_db.ts.tmpl", To: "src/db.ts", When: "has:postgres"},
 				{Run: &Cmd{Bin: "npm", Args: []string{"install"}}},
 			},
-			Layout: []string{"package.json", "index.js"},
+			Layout: []string{"package.json", "tsconfig.json", "src/index.ts"},
 		}
 	}
 }

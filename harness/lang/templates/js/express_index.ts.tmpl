@@ -1,0 +1,12 @@
+import express from 'express';
+{{if .has_postgres}}import { pool } from './db';{{end}}
+
+const app = express();
+app.use(express.json());
+
+app.get('/', (_req, res) => {
+  res.json({ status: 'ok' });
+});
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`listening on ${port}`));

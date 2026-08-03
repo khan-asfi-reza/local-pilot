@@ -23,6 +23,7 @@ func (o *Orchestrator) scaffold(ctx context.Context, prompt, workDir, env string
 	}
 	h, framework, score := lang.Detect(prompt, workDir)
 	if h == nil || score < 0 {
+		emit(events.Text("\n[no deterministic template matched this stack; using the model to scaffold]\n"))
 		return "" // no deterministic recipe → LLM initialize()
 	}
 	emit(events.Text("\n[scaffolding " + framework + " deterministically with its real generator]\n"))

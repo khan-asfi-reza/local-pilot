@@ -16,6 +16,8 @@ func TestDetectByKeyword(t *testing.T) {
 		{"Make a FastAPI service with postgres", "fastapi"},
 		{"A Next.js dashboard", "nextjs"},
 		{"Simple express.js server", "express"},
+		{"Build a NestJS marketplace API", "nestjs"},
+		{"A Node.js REST API backend for orders", "node"},
 		{"A gin web service in golang", "gin"},
 		{"CLI in plain C program", "c"},
 		{"A C++ number cruncher", "cpp"},
