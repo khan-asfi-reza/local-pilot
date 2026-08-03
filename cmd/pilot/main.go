@@ -900,8 +900,23 @@ func ensureOllama(url string, ctxLen int) error {
 		persistOllamaContext(ctxLen)
 	}
 	if ollamaUp(url) {
-		ctxOK := ctxLen <= 0 || ensuredContext >= ctxLen || ollamaContextAtLeast(url, ctxLen)
+		// Decide if the window is already big enough. A loaded model is authoritative
+		// (its context_length is the real window). When nothing is loaded /api/ps says
+		// nothing, so fall back to the marker of what pilot last launched ollama with —
+		// otherwise every launch would restart an already-correctly-sized idle server
+		// (it just restarted, no model loaded yet → can't confirm → restart again…).
+		ctxOK := ctxLen <= 0 || ensuredContext >= ctxLen
+		if !ctxOK {
+			if now, known := ollamaLoadedContext(url); known {
+				ctxOK = now >= ctxLen
+			} else {
+				ctxOK = readLaunchedCtx() >= ctxLen
+			}
+		}
 		if ctxOK && ollamaReachableOnLAN() {
+			if ctxLen > 0 {
+				ensuredContext = ctxLen
+			}
 			fmt.Println(green("✓ ") + "ollama running")
 			return nil
 		}
@@ -946,6 +961,7 @@ func ensureOllama(url string, ctxLen int) error {
 		if ollamaUp(url) {
 			if ctxLen > 0 {
 				ensuredContext = ctxLen
+				writeLaunchedCtx(ctxLen) // remember the window across pilot invocations
 			}
 			fmt.Println(green("✓ ") + "ollama running")
 			return nil
@@ -953,6 +969,36 @@ func ensureOllama(url string, ctxLen int) error {
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("ollama did not come up on %s", url)
+}
+
+// ollamaCtxMarkerPath is the file recording the OLLAMA_CONTEXT_LENGTH pilot last
+// launched ollama with, so a later pilot run trusts an already-sized idle server
+// (which /api/ps cannot confirm) instead of restarting it on every launch.
+func ollamaCtxMarkerPath() string {
+	cfgPath, err := appdir.Ensure()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(cfgPath), ".ollama-ctx")
+}
+
+func readLaunchedCtx() int {
+	p := ollamaCtxMarkerPath()
+	if p == "" {
+		return 0
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(b)))
+	return n
+}
+
+func writeLaunchedCtx(n int) {
+	if p := ollamaCtxMarkerPath(); p != "" {
+		_ = os.WriteFile(p, []byte(strconv.Itoa(n)), 0o644)
+	}
 }
 
 // ollamaLoadedContext returns the smallest context window across currently-loaded
