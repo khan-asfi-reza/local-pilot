@@ -130,9 +130,12 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 	targets := req.Grounding.Targets()
 	mutatedTargets := map[string]bool{}
 	mutatedAny := false
-	groundingNudges := 0
+	groundingStall := 0 // consecutive finish attempts that wrote no NEW target file
+	groundedAt := 0     // count of targets written at the last finish attempt
 	driftNudged := false
 	falseDoneNudged := false
+	noWriteTurns := 0 // turns that used tools but wrote nothing (create task explore-loop)
+	writeForced := false
 
 	// onDelta streams the model's tokens live: the answer as text, the thinking as
 	// reasoning. Content is therefore already shown by the time a turn returns, so
@@ -147,7 +150,14 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 	}
 
 	for step := 0; step < a.maxSteps; step++ {
-		msg, tokens, err := a.chatStep(ctx, system, conv, defs, onDelta)
+		// Refresh the working-directory tree each step so a native run always sees the
+		// current layout — including files a sibling sub-task just wrote — without
+		// spending a list_dir call to re-orient. Mirrors runJSON; chat has no workdir.
+		liveSystem := system
+		if !req.Chat && env.WorkDir != "" {
+			liveSystem = system + "\n\nCURRENT FILES in the working directory (refreshed every step):\n" + currentTree(env.WorkDir)
+		}
+		msg, tokens, err := a.chatStep(ctx, liveSystem, conv, defs, onDelta)
 		if err != nil {
 			emit(events.Error(err.Error()))
 			return conv
@@ -163,16 +173,25 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 			if text == "" {
 				text = strings.TrimSpace(msg.Reasoning)
 			}
-			// Grounding gate: nudge once if a named target was never changed, then fail hard.
+			// Grounding gate: a create task is not done until every named target exists.
+			// Keep nudging AS LONG AS the model writes a new target each round (progress),
+			// naming ONE file at a time — a degrading small model complies far better with
+			// a single named write than "write all of them". Give up only after several
+			// rounds with no new file.
 			if !req.Chat && req.Grounding.RequiresMutation() {
 				if missing := missingTargets(targets, mutatedTargets); len(missing) > 0 {
-					if groundingNudges < 3 {
-						groundingNudges++
+					if len(mutatedTargets) > groundedAt {
+						groundingStall = 0
+					} else {
+						groundingStall++
+					}
+					groundedAt = len(mutatedTargets)
+					if groundingStall <= maxGroundingStall {
 						conv = append(conv, model.Message{Role: "assistant", Content: text})
 						conv = append(conv, model.Message{Role: "user", Content: groundingMissMsg(missing)})
 						continue
 					}
-					emit(events.Error("grounding failure: finished without modifying the named target(s): " + strings.Join(missing, ", ")))
+					emit(events.Error("grounding failure: finished without creating the named target(s): " + strings.Join(missing, ", ")))
 					return conv
 				}
 			}
@@ -277,6 +296,17 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 				debugInjected = true
 			}
 		}
+
+		// Explore-loop breaker for create tasks: a child whose targets don't exist yet
+		// keeps calling list_dir/read_file on those not-yet-created paths (they error)
+		// and never writes. After two tool turns with no mutation, force it to write.
+		if len(targets) > 0 && !mutatedAny {
+			noWriteTurns++
+			if noWriteTurns >= 2 && !writeForced {
+				writeForced = true
+				conv = append(conv, model.Message{Role: "user", Content: forceWriteMsg(missingTargets(targets, mutatedTargets))})
+			}
+		}
 	}
 
 	emit(events.Error(fmt.Sprintf("reached the step limit of %d without finishing", a.maxSteps)))
@@ -297,7 +327,8 @@ func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event
 	targets := req.Grounding.Targets()
 	mutatedTargets := map[string]bool{}
 	mutatedAny := false
-	groundingNudges := 0
+	groundingStall := 0
+	groundedAt := 0
 	driftNudged := false
 	falseDoneNudged := false
 
@@ -329,16 +360,21 @@ func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event
 			}
 			text = finalText(text)
 
-			// Grounding gate: nudge once, then fail hard.
+			// Grounding gate: progress-aware, one file at a time (mirrors runNative).
 			if !req.Chat && req.Grounding.RequiresMutation() {
 				if missing := missingTargets(targets, mutatedTargets); len(missing) > 0 {
-					if groundingNudges < 3 {
-						groundingNudges++
+					if len(mutatedTargets) > groundedAt {
+						groundingStall = 0
+					} else {
+						groundingStall++
+					}
+					groundedAt = len(mutatedTargets)
+					if groundingStall <= maxGroundingStall {
 						conv = append(conv, model.Message{Role: "assistant", Content: raw})
 						conv = append(conv, model.Message{Role: "user", Content: groundingMissMsg(missing)})
 						continue
 					}
-					emit(events.Error("grounding failure: finished without modifying the named target(s): " + strings.Join(missing, ", ")))
+					emit(events.Error("grounding failure: finished without creating the named target(s): " + strings.Join(missing, ", ")))
 					return conv
 				}
 			}

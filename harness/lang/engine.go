@@ -67,6 +67,11 @@ type Recipe struct {
 
 const defaultTimeout = 300 * time.Second
 
+// scaffoldDirName is the temp subdir a tempmove generator writes into before its
+// output is merged up. It is a VALID npm package name (no leading dot), since
+// create-next-app / create-vite / nest new derive the project name from it.
+const scaffoldDirName = "harness_scaffold"
+
 // run executes a recipe end-to-end: toolchain gate, install, generate (with nest
 // handling + verify), post steps, then reports the canonical names and the files
 // actually on disk. Any failure returns an error so the caller falls back to the
@@ -89,16 +94,17 @@ func (rec Recipe) run(ctx context.Context, r Req) (Result, error) {
 	defer cancel()
 
 	data := rec.vars(r)
+	data["scaffold_dir"] = scaffoldDirName
 
-	// tempmove isolates a nesting generator so a partial/failed run never pollutes
-	// workDir; dot generators write straight into workDir.
+	// tempmove isolates a nesting generator (create-next-app, create-vite, nest new)
+	// in a temp subdir so a partial/failed run never pollutes workDir. The generator
+	// ALWAYS runs from workDir; its target is "." (dot generators) or {{.scaffold_dir}}
+	// (tempmove), and the output is merged up afterwards. The subdir is NOT
+	// pre-created — the generator makes it, so it can validate an empty target.
 	genDir := r.WorkDir
 	if rec.Generate != nil && rec.Nest == NestTempMove {
-		genDir = filepath.Join(r.WorkDir, ".harness_scaffold")
+		genDir = filepath.Join(r.WorkDir, scaffoldDirName)
 		_ = os.RemoveAll(genDir)
-		if err := os.MkdirAll(genDir, 0o755); err != nil {
-			return Result{}, err
-		}
 		defer os.RemoveAll(genDir)
 	}
 
@@ -109,7 +115,7 @@ func (rec Recipe) run(ctx context.Context, r Req) (Result, error) {
 	}
 
 	if rec.Generate != nil {
-		if err := runCmd(ctx, genDir, rec.Generate.Bin, tmplArgs(rec.Generate.Args, data)); err != nil {
+		if err := runCmd(ctx, r.WorkDir, rec.Generate.Bin, tmplArgs(rec.Generate.Args, data)); err != nil {
 			return Result{}, err
 		}
 		if rec.Verify != "" {

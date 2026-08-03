@@ -68,7 +68,7 @@ func pyRecipe(framework string) Recipe {
 				{Run: &Cmd{Bin: ".venv/bin/pip", Args: []string{"install", "--quiet", "celery", "redis"}}, When: "has:redis&kw:celery|worker|background task|task queue"},
 				{Render: "python/django_settings.py.tmpl", To: "{{.project}}/settings.py", Append: true},
 				{Render: "python/django_requirements.txt.tmpl", To: "requirements.txt"},
-				{Render: "_addons/celery/celery_app.py.tmpl", To: "{{.project}}/celery.py", When: "has:redis&kw:celery|worker|background task|task queue"},
+				{Render: "addons/celery/celery_app.py.tmpl", To: "{{.project}}/celery.py", When: "has:redis&kw:celery|worker|background task|task queue"},
 			},
 			Layout: []string{"manage.py", "{{.project}}/settings.py", "{{.project}}/urls.py", "{{.app}}/models.py"},
 		}

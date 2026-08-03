@@ -145,10 +145,14 @@ func (a *Agent) runOrchestrated(ctx context.Context, req Request, emit func(even
 	if childMode == "" {
 		childMode = tools.ModeAuto
 	}
-	// Build children get a write-focused tool set: with list_dir/search/shell they
-	// explore-loop on a fresh project and never write. read/write/edit forces them
-	// to produce files. Fall back to the full set only if the parent restricted it.
-	allowed := []string{"read_file", "write_file", "edit_file"}
+	// Build children get a write-focused tool set. read/write/edit are the point;
+	// list_dir/search are read-only orientation. We do NOT hard-block list_dir/search:
+	// a native model calls list_dir out of habit, and blocking it returns a derailing
+	// error that burns steps and ends with "produced no files". The live file tree is
+	// now pushed into every step (see runNative), so the child rarely needs them — but
+	// when it does, the call succeeds harmlessly. shell/serve stay out: per-sub-task
+	// server runs are wrong; verification is structural and top-level.
+	allowed := []string{"read_file", "write_file", "edit_file", "list_dir", "search"}
 	if len(req.Allowed) > 0 && len(req.Allowed) < len(allowed) {
 		allowed = req.Allowed
 	}

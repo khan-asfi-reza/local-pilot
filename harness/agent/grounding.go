@@ -72,12 +72,32 @@ func driftMsg(path string, targets []string) string {
 		"the change there. Do not edit any other file.", path, strings.Join(targets, ", "))
 }
 
+// maxGroundingStall is how many consecutive finish attempts may write no NEW
+// target before the loop gives up. As long as each round produces a fresh file,
+// the gate keeps going, so a many-file task completes one write at a time.
+const maxGroundingStall = 4
+
+// groundingMissMsg nudges toward the next single missing file. A degrading small
+// model complies with one named write + "tool call only" far better than "write
+// all of them", which it tends to answer with prose and no tool call at all.
 func groundingMissMsg(missing []string) string {
+	next := missing[0]
+	tail := ""
+	if len(missing) > 1 {
+		tail = fmt.Sprintf(" (%d files still needed overall: %s)", len(missing), strings.Join(missing, ", "))
+	}
+	return fmt.Sprintf("Not finished — required files are still missing%s. Create them ONE AT A TIME. Your very "+
+		"next message must be a single write_file tool call for exactly this file: %s, with its COMPLETE content "+
+		"in the arguments. It does not exist yet, so do NOT read_file or list_dir it; write_file creates parent "+
+		"folders. Reply with the tool call ALONE — no prose, no explanation, no code pasted in the message body.", tail, next)
+}
+
+func forceWriteMsg(missing []string) string {
 	j := strings.Join(missing, ", ")
-	return fmt.Sprintf("You have NOT modified the named target file(s): %s. A create/edit/fix task is not "+
-		"complete until those exact files are changed in place. Do it now: read %s, apply the change with "+
-		"write_file/edit_file, and do not create or touch any other file. Do not claim success until %s is "+
-		"actually changed.", j, j, j)
+	return fmt.Sprintf("STOP exploring — you have used tools but written nothing. Your target files do not exist "+
+		"yet; that is expected on a fresh task, so list_dir and read_file on them only error. Your NEXT action MUST "+
+		"be write_file, creating one of these files with its COMPLETE content: %s. write_file makes any missing "+
+		"parent folders — do not list or read first, just write each file.", j)
 }
 
 const falseDoneMsg = "You replied as if the task is finished, but you have NOT created or edited any file " +

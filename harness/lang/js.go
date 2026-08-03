@@ -77,7 +77,7 @@ func jsRecipe(framework string) Recipe {
 			Framework: "nextjs", Requires: []string{"node", "npm", "npx"}, Timeout: 420 * time.Second,
 			Project: "web", App: "web", Settings: "next.config.ts",
 			Stack: "Next.js (App Router, TypeScript)", Entry: "npm run dev",
-			Generate: &Cmd{Bin: "npx", Args: []string{"--yes", "create-next-app@15", ".harness_scaffold",
+			Generate: &Cmd{Bin: "npx", Args: []string{"--yes", "create-next-app@15", "{{.scaffold_dir}}",
 				"--ts", "--app", "--use-npm", "--no-src-dir", "--no-tailwind", "--no-eslint", "--no-turbopack", "--import-alias", "@/*"}},
 			Nest: NestTempMove, Verify: "package.json",
 			Post: append(
@@ -91,7 +91,7 @@ func jsRecipe(framework string) Recipe {
 			Framework: "react", Requires: []string{"node", "npm", "npx"}, Timeout: 420 * time.Second,
 			Project: "web", App: "web", Settings: "vite.config.ts",
 			Stack: "React + Vite (TypeScript)", Entry: "npm run dev",
-			Generate: &Cmd{Bin: "npm", Args: []string{"create", "vite@latest", ".harness_scaffold", "--", "--template", "react-ts"}},
+			Generate: &Cmd{Bin: "npm", Args: []string{"create", "vite@latest", "{{.scaffold_dir}}", "--", "--template", "react-ts"}},
 			Nest:     NestTempMove, Verify: "package.json",
 			Post: append(
 				[]Post{{Run: &Cmd{Bin: "npm", Args: []string{"install"}}}},
@@ -104,7 +104,7 @@ func jsRecipe(framework string) Recipe {
 			Framework: "nestjs", Requires: []string{"node", "npm", "npx"}, Timeout: 600 * time.Second,
 			Project: "api", App: "api", Settings: "src/app.module.ts",
 			Stack: "NestJS (TypeScript)", Entry: "npm run start:dev",
-			Generate: &Cmd{Bin: "npx", Args: []string{"--yes", "@nestjs/cli@latest", "new", ".harness_scaffold",
+			Generate: &Cmd{Bin: "npx", Args: []string{"--yes", "@nestjs/cli@latest", "new", "{{.scaffold_dir}}",
 				"--package-manager", "npm", "--skip-git"}},
 			Nest: NestTempMove, Verify: "package.json",
 			Layout: []string{"package.json", "src/main.ts", "src/app.module.ts", "src/app.controller.ts"},

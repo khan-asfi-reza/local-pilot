@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -628,10 +629,22 @@ func contextCmd(args []string) error {
 		}
 		fmt.Println()
 		fmt.Printf("%s%d tokens\n", dim("  auto-size: "), auto)
+		want := desiredContextLength(cfg)
 		if cfg.ContextLength > 0 {
 			fmt.Printf("%s%d tokens (override)\n", dim("  in use:    "), cfg.ContextLength)
 		} else {
 			fmt.Printf("%s%d tokens (auto)\n", dim("  in use:    "), auto)
+		}
+		// Show the window the RUNNING server actually loaded models at — this is what
+		// bites a build, and it can be far below the configured value if ollama was
+		// started elsewhere (e.g. the Windows app) at its 4096 default.
+		if now, ok := ollamaLoadedContext("http://localhost:11434"); ok {
+			if now < want {
+				fmt.Printf("%s%d tokens — SMALLER than configured; run %s to restart ollama and apply\n",
+					yellow("  server now:"), now, cyan("pilot context "+strconv.Itoa(want)))
+			} else {
+				fmt.Printf("%s%d tokens\n", dim("  server now:"), now)
+			}
 		}
 		fmt.Println(dim("  set with:  ") + cyan("pilot context <tokens>") + dim(" or ") + cyan("pilot context auto"))
 		return nil
@@ -871,30 +884,46 @@ func stop() error {
 	return fmt.Errorf("could not stop ollama; it may be running as a service. Stop it manually")
 }
 
+// ensuredContext is the OLLAMA_CONTEXT_LENGTH pilot has already guaranteed the
+// running server was started with, this process. It lets repeated ensureOllama
+// calls in one launch skip a redundant restart once the window is known-good.
+var ensuredContext int
+
 // ensureOllama makes sure the ollama server answers, starting it if it does not.
-// It also guarantees ollama is bound to all interfaces so other machines on the
-// LAN can use this host — restarting a localhost-only server if needed. ctxLen,
-// when > 0, is the OLLAMA_CONTEXT_LENGTH the server is launched with (and
-// persisted for future launches); it only takes effect on a server this call
-// starts, so a already-running server keeps its window until `pilot context`.
+// It ALWAYS enforces the context window: an already-running server whose window
+// is below ctxLen (or cannot be confirmed) is restarted with OLLAMA_CONTEXT_LENGTH,
+// so `pilot` never silently serves at ollama's small default (e.g. 4096). It also
+// keeps ollama bound to all interfaces so LAN machines can reach it.
 func ensureOllama(url string, ctxLen int) error {
 	persistOllamaLANHost()
 	if ctxLen > 0 {
 		persistOllamaContext(ctxLen)
 	}
 	if ollamaUp(url) {
-		if ollamaReachableOnLAN() {
+		ctxOK := ctxLen <= 0 || ensuredContext >= ctxLen || ollamaContextAtLeast(url, ctxLen)
+		if ctxOK && ollamaReachableOnLAN() {
 			fmt.Println(green("✓ ") + "ollama running")
 			return nil
 		}
-		// Up, but bound to localhost only: rebind it so the LAN can reach it.
-		fmt.Println(yellow("• ") + "ollama bound to localhost only — rebinding for LAN access")
+		if !ctxOK {
+			fmt.Printf("%sollama context window is below %d tokens — restarting to resize\n", yellow("• "), ctxLen)
+		} else {
+			// Up, but bound to localhost only: rebind it so the LAN can reach it.
+			fmt.Println(yellow("• ") + "ollama bound to localhost only — rebinding for LAN access")
+		}
 		killOllama()
 		for range 10 {
 			if !ollamaUp(url) {
 				break
 			}
 			time.Sleep(300 * time.Millisecond)
+		}
+		// Could not stop it (likely a managed service/desktop app): use it as-is
+		// rather than fail, but say how to apply the window manually.
+		if ollamaUp(url) {
+			fmt.Printf("%scould not restart ollama (running as a service?); using it as-is. "+
+				"To apply the window, set OLLAMA_CONTEXT_LENGTH=%d on that server and restart it.\n", yellow("• "), ctxLen)
+			return nil
 		}
 	}
 	fmt.Println(dim("… starting ollama serve"))
@@ -915,12 +944,58 @@ func ensureOllama(url string, ctxLen int) error {
 	}
 	for range 40 {
 		if ollamaUp(url) {
+			if ctxLen > 0 {
+				ensuredContext = ctxLen
+			}
 			fmt.Println(green("✓ ") + "ollama running")
 			return nil
 		}
 		time.Sleep(500 * time.Millisecond)
 	}
 	return fmt.Errorf("ollama did not come up on %s", url)
+}
+
+// ollamaLoadedContext returns the smallest context window across currently-loaded
+// models (via /api/ps), and whether anything is loaded to report. Ollama loads a
+// model at the server's OLLAMA_CONTEXT_LENGTH default, so this reveals the window
+// actually in force — which can be far below what pilot configured if the server
+// was started elsewhere (e.g. the Windows Ollama app) at its 4096 default.
+func ollamaLoadedContext(url string) (int, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(url, "/")+"/api/ps", nil)
+	if err != nil {
+		return 0, false
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, false
+	}
+	defer resp.Body.Close()
+	var body struct {
+		Models []struct {
+			ContextLength int `json:"context_length"`
+		} `json:"models"`
+	}
+	if json.NewDecoder(resp.Body).Decode(&body) != nil || len(body.Models) == 0 {
+		return 0, false
+	}
+	min := body.Models[0].ContextLength
+	for _, m := range body.Models {
+		if m.ContextLength < min {
+			min = m.ContextLength
+		}
+	}
+	return min, true
+}
+
+// ollamaContextAtLeast reports whether a currently-loaded model confirms the
+// server's context window is at least want tokens. If nothing is loaded or the
+// probe fails it cannot confirm and returns false, so the caller restarts the
+// server to guarantee the window rather than trust a small default.
+func ollamaContextAtLeast(url string, want int) bool {
+	n, ok := ollamaLoadedContext(url)
+	return ok && n >= want
 }
 
 // ollamaReachableOnLAN reports whether ollama answers on this machine's LAN IP

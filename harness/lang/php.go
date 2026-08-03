@@ -43,7 +43,7 @@ func phpRecipe() Recipe {
 		Framework: "laravel", Requires: []string{"php", "composer"}, Timeout: 420 * time.Second,
 		Project: "app", App: "app", Settings: "config/app.php",
 		Stack: "Laravel (PHP)", Entry: "php artisan serve",
-		Generate: &Cmd{Bin: "composer", Args: []string{"create-project", "laravel/laravel", ".harness_scaffold", "--no-interaction"}},
+		Generate: &Cmd{Bin: "composer", Args: []string{"create-project", "laravel/laravel", "{{.scaffold_dir}}", "--no-interaction"}},
 		Nest:     NestTempMove, Verify: "artisan",
 		Layout: []string{"artisan", "composer.json", "routes/web.php"},
 	}

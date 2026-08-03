@@ -58,6 +58,46 @@ func TestNewDAGCycle(t *testing.T) {
 	}
 }
 
+func TestDAGNaturalIDOrder(t *testing.T) {
+	// Dependency-free tasks must launch in natural numeric order (t2 before t11),
+	// not lexicographic (which put t11 before t2). Regression for the reported
+	// "t11 ran before t2" bug.
+	var tasks []SubTask
+	for _, id := range []string{"t3", "t11", "t1", "t2", "t12", "t10"} {
+		tasks = append(tasks, SubTask{ID: id})
+	}
+	d, err := NewDAG(Plan{Tasks: tasks})
+	if err != nil {
+		t.Fatalf("NewDAG errored: %v", err)
+	}
+	want := []string{"t1", "t2", "t3", "t10", "t11", "t12"}
+	got := d.TopoIDs()
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("TopoIDs = %v, want %v", got, want)
+		}
+	}
+}
+
+func TestLessNatural(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"t2", "t11", true},
+		{"t11", "t2", false},
+		{"t1", "t2", true},
+		{"t10", "t9", false},
+		{"a", "b", true},
+		{"t2", "t2", false},
+	}
+	for _, c := range cases {
+		if got := lessNatural(c.a, c.b); got != c.want {
+			t.Errorf("lessNatural(%q,%q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
 func TestScheduleDepOrderAndFailureDoesNotBlock(t *testing.T) {
 	dag, _ := NewDAG(Plan{Tasks: []SubTask{
 		{ID: "t1"},

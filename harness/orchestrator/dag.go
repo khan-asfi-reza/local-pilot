@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 type DAG struct {
@@ -26,7 +27,7 @@ func NewDAG(p Plan) (*DAG, error) {
 		tasks[t.ID] = t
 		ids = append(ids, t.ID)
 	}
-	sort.Strings(ids)
+	sortIDs(ids)
 	dependents := map[string][]string{}
 	for _, id := range ids {
 		for _, dep := range tasks[id].Deps {
@@ -70,13 +71,52 @@ func topoOrder(tasks map[string]SubTask, ids []string) ([]string, error) {
 				}
 			}
 		}
-		sort.Strings(ready)
+		sortIDs(ready)
 		queue = append(queue, ready...)
 	}
 	if len(out) != len(ids) {
 		return nil, fmt.Errorf("dependency cycle among sub-tasks")
 	}
 	return out, nil
+}
+
+// sortIDs orders task ids naturally so "t2" precedes "t11". A plain string sort
+// puts "t11" before "t2" (because '1' < '2'), which launched sub-tasks out of
+// order — t11 ran before its logical predecessors.
+func sortIDs(ids []string) {
+	sort.Slice(ids, func(i, j int) bool { return lessNatural(ids[i], ids[j]) })
+}
+
+// lessNatural compares two strings with embedded digit runs compared numerically.
+func lessNatural(a, b string) bool {
+	for len(a) > 0 && len(b) > 0 {
+		ad := a[0] >= '0' && a[0] <= '9'
+		bd := b[0] >= '0' && b[0] <= '9'
+		if ad && bd {
+			ai, bi := 0, 0
+			for ai < len(a) && a[ai] >= '0' && a[ai] <= '9' {
+				ai++
+			}
+			for bi < len(b) && b[bi] >= '0' && b[bi] <= '9' {
+				bi++
+			}
+			an := strings.TrimLeft(a[:ai], "0")
+			bn := strings.TrimLeft(b[:bi], "0")
+			if len(an) != len(bn) {
+				return len(an) < len(bn)
+			}
+			if an != bn {
+				return an < bn
+			}
+			a, b = a[ai:], b[bi:]
+			continue
+		}
+		if a[0] != b[0] {
+			return a[0] < b[0]
+		}
+		a, b = a[1:], b[1:]
+	}
+	return len(a) < len(b)
 }
 
 func uniqueDeps(deps []string) []string {

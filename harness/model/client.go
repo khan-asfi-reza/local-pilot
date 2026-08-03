@@ -144,6 +144,7 @@ type constrainedRequest struct {
 	Messages       []Message      `json:"messages"`
 	Stream         bool           `json:"stream"`
 	Temperature    float64        `json:"temperature"`
+	MaxTokens      int            `json:"max_tokens,omitempty"`
 	ResponseFormat responseFormat `json:"response_format"`
 }
 
@@ -167,6 +168,13 @@ type fullResponse struct {
 	} `json:"usage"`
 }
 
+// maxOutputTokens caps a single response. It must be large enough to hold a full
+// source file emitted inside one write_file tool-call argument: the OpenAI-compat
+// endpoint otherwise applies a small server default (observed 4096) that truncates
+// the tool call mid-content, so the call is dropped and no file is written — the
+// dominant "produced no files" failure on real code files.
+const maxOutputTokens = 8192
+
 type chatRequest struct {
 	Model         string          `json:"model"`
 	Messages      []Message       `json:"messages"`
@@ -174,6 +182,7 @@ type chatRequest struct {
 	Stream        bool            `json:"stream"`
 	StreamOptions *streamOptions  `json:"stream_options,omitempty"`
 	Temperature   float64         `json:"temperature"`
+	MaxTokens     int             `json:"max_tokens,omitempty"`
 	CachePrompt   bool            `json:"cache_prompt,omitempty"`
 	JSONSchema    json.RawMessage `json:"json_schema,omitempty"`
 }
@@ -220,6 +229,7 @@ func (c *Client) Chat(ctx context.Context, url, model string, msgs []Message, de
 		Stream:        true,
 		StreamOptions: &streamOptions{IncludeUsage: true},
 		Temperature:   0.2,
+		MaxTokens:     maxOutputTokens,
 	}
 	buf, err := json.Marshal(body)
 	if err != nil {
@@ -319,6 +329,7 @@ func (c *Client) CompleteConstrained(ctx context.Context, url, model string, msg
 		Messages:       msgs,
 		Stream:         false,
 		Temperature:    0.2,
+		MaxTokens:      maxOutputTokens,
 		ResponseFormat: responseFormat{Type: "json_schema", JSONSchema: schemaBlock{Name: "action", Schema: schema}},
 	}
 	buf, err := json.Marshal(body)
