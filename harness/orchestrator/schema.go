@@ -23,8 +23,10 @@ const decomposeSchema = `{"type":"object","properties":{"tasks":{"type":"array",
 	`"deps":{"type":"array","items":{"type":"string"}},` +
 	`"target_files":{"type":"array","items":{"type":"string"}},` +
 	`"acceptance":{"type":"array","items":{"type":"string"}},` +
+	`"packages":{"type":"array","items":{"type":"string"}},` +
+	`"exposes":{"type":"array","items":{"type":"string"}},` +
 	`"section_idx":{"type":"integer"}` +
-	`},"required":["id","title","description","deps","target_files","acceptance","section_idx"]}}},"required":["tasks"]}`
+	`},"required":["id","title","description","deps","target_files","acceptance","packages","exposes","section_idx"]}}},"required":["tasks"]}`
 
 // Intake classifies a request into a grounding contract with one stateless call.
 func Intake(ctx context.Context, p Planner, prompt string) (*Contract, error) {
@@ -69,6 +71,12 @@ func Enrich(ctx context.Context, p Planner, prompt string) (string, error) {
 // fed the outline only, never full section bodies.
 func Decompose(ctx context.Context, p Planner, c *Contract, outline, stateText string) (Plan, error) {
 	sys := "You break a software project into a DAG of INDEPENDENT sub-tasks a small model can each finish alone. " +
+		"You are planning to BUILD the working software the specification describes — real application source code. " +
+		"The spec/PRD is your INPUT: NEVER create a sub-task whose job is to write the PRD, the spec, requirement " +
+		"text, or documentation. Every sub-task must produce actual code (backend modules, API routes, DB schema/" +
+		"migrations, frontend components/pages) or its tests. Target_files are real source files (.ts/.tsx/.sql/…), " +
+		"never a .md spec. If the spec has N feature areas, produce roughly one buildable task per area, not one task " +
+		"per spec section.\n" +
 		"Follow these rules for a good plan:\n" +
 		"1. Prefer FEW, coherent sub-tasks. Group tightly-coupled files into ONE task (a web app's models, " +
 		"serializers, views and routes belong together; a config/settings module is one task; the test suite is " +
@@ -82,12 +90,30 @@ func Decompose(ctx context.Context, p Planner, c *Contract, outline, stateText s
 		"import and wire together.\n" +
 		"5. Include a task that creates the test/verification file(s) the acceptance criteria require.\n" +
 		"6. COVER THE WHOLE PROJECT: across all tasks, target_files must include EVERY file needed to satisfy the " +
-		"acceptance criteria — entrypoint/config, data layer, business logic, API endpoints, the test file, and any " +
-		"frontend. A file only exists if it is listed under PROJECT STATE; assume nothing else exists yet. Do NOT " +
-		"recreate files listed as existing unless the task must change them.\n" +
+		"acceptance criteria — entrypoint/config, data layer, business logic, API endpoints, a SEED script that inserts " +
+		"realistic demo data (so the UI shows real content, not empty lists), the test file, and any frontend. A file " +
+		"only exists if it is listed under PROJECT STATE; assume nothing else exists yet. Do NOT recreate files listed " +
+		"as existing unless the task must change them.\n" +
+		"7. For each task, list `packages` = the exact installable npm/pip package names the task's code will import " +
+		"beyond the scaffold (e.g. jsonwebtoken, bcrypt, zod, uuid, axios, zustand, react-router-dom). These are " +
+		"installed BEFORE the task runs so an import never fails. Use [] if the task needs nothing beyond the scaffold; " +
+		"never list built-in modules (fs, path, crypto) or already-scaffolded deps (express, react, pg).\n" +
+		"8. For each task, list `exposes` = the exact PUBLIC INTERFACE this task publishes that OTHER tasks rely on — " +
+		"the contract at its boundary. This is whatever couples the pieces, so use whatever form fits the project: a " +
+		"function/method/class signature, a module export, an HTTP route (METHOD + full path), a CLI command/flag, a DB " +
+		"table with its columns, an event/message name + shape, a config key. Write each as a precise LITERAL string a " +
+		"consumer can use verbatim — e.g. `GET /api/doctors/{id}`, `createOrder(items: Item[]) -> Order`, " +
+		"`users(id, email, role)`, `--out <file>`, `event order.created {id, total}`. Tasks are built independently and " +
+		"cannot see each other's code, so a consumer only stays in sync by using the producer's exposed strings EXACTLY. " +
+		"Therefore: ONE interface per array element (do not comma-join several into one string); pick ONE consistent " +
+		"convention across the WHOLE plan and reuse it (e.g. every HTTP route under /api/<resource>, snake_case columns); " +
+		"and use the SAME path/name shape for every operation on a resource — if you list `GET /api/doctors`, then create/" +
+		"update/nested reads stay under that same base (`POST /api/doctors`, `GET /api/doctors/{id}/availability`), never a " +
+		"parallel flat form like `/api/availabilities`. Producer and consumer must never drift. Use [] only for a private " +
+		"leaf nothing else depends on.\n" +
 		"Each sub-task: short id (t1, t2, ...), a title, a description precise enough to build the files ALONE " +
 		"(name the exact modules, routes, symbols and imports it must expose or use), deps (ids), target_files " +
-		"(exact paths), acceptance, and section_idx (the outline number, or -1). No cycles. Output ONLY the JSON."
+		"(exact paths), acceptance, packages, exposes, and section_idx (the outline number, or -1). No cycles. Output ONLY the JSON."
 	user := "CONTRACT:\naction=" + c.Action + "\nacceptance=" + strings.Join(c.AcceptanceCriteria, "; ")
 	if stateText != "" {
 		user += "\n\nPROJECT STATE (already scaffolded — plan FEATURE tasks on top; reuse these names/layout):\n" + stateText

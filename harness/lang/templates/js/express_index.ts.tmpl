@@ -1,12 +1,29 @@
+import './env';
 import express from 'express';
-{{if .has_postgres}}import { pool } from './db';{{end}}
+import cors from 'cors';
+{{if .has_postgres}}import { pool } from './db';{{end}}{{if and .needs_auth .has_postgres}}
+import { authRouter } from './auth';{{end}}
 
 const app = express();
+
+// CORS is open in dev so the Vite frontend (proxied at /api) can call this API.
+app.use(cors());
 app.use(express.json());
 
-app.get('/', (_req, res) => {
-  res.json({ status: 'ok' });
+// Health check — also verifies the database connection when Postgres is used.
+app.get('/health', async (_req, res) => {
+{{if .has_postgres}}  try {
+    await pool.query('SELECT 1');
+    res.json({ status: 'ok', db: true });
+  } catch (err) {
+    res.status(503).json({ status: 'degraded', db: false });
+  }{{else}}  res.json({ status: 'ok' });{{end}}
 });
 
-const port = process.env.PORT || 3000;
-app.listen(port, () => console.log(`listening on ${port}`));
+{{if and .needs_auth .has_postgres}}// Authentication is ready: POST /api/auth/register, POST /api/auth/login, GET /api/auth/me.
+// Protect a feature router with requireAuth from './auth'.
+app.use('/api/auth', authRouter);
+{{end}}// Mount feature routers here, e.g.  app.use('/api/items', itemsRouter);
+
+const port = process.env.PORT || 3001;
+app.listen(port, () => console.log(`API listening on http://localhost:${port}`));

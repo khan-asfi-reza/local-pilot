@@ -30,8 +30,8 @@ var catalog = map[string]svcConf{
 		RunArgs: []string{"-e", "POSTGRES_USER=pilot", "-e", "POSTGRES_PASSWORD=pilot", "-e", "POSTGRES_DB=app"},
 		EnvFor: func(p int) []string {
 			return []string{
-				fmt.Sprintf("DATABASE_URL=postgresql://pilot:pilot@localhost:%d/app", p),
-				"POSTGRES_HOST=localhost", fmt.Sprintf("POSTGRES_PORT=%d", p),
+				fmt.Sprintf("DATABASE_URL=postgresql://pilot:pilot@127.0.0.1:%d/app", p),
+				"POSTGRES_HOST=127.0.0.1", fmt.Sprintf("POSTGRES_PORT=%d", p),
 				"POSTGRES_USER=pilot", "POSTGRES_PASSWORD=pilot", "POSTGRES_DB=app",
 			}
 		},
@@ -41,8 +41,8 @@ var catalog = map[string]svcConf{
 		RunArgs: []string{"-e", "MYSQL_ROOT_PASSWORD=pilot", "-e", "MYSQL_DATABASE=app"},
 		EnvFor: func(p int) []string {
 			return []string{
-				fmt.Sprintf("DATABASE_URL=mysql://root:pilot@localhost:%d/app", p),
-				"MYSQL_HOST=localhost", fmt.Sprintf("MYSQL_PORT=%d", p),
+				fmt.Sprintf("DATABASE_URL=mysql://root:pilot@127.0.0.1:%d/app", p),
+				"MYSQL_HOST=127.0.0.1", fmt.Sprintf("MYSQL_PORT=%d", p),
 				"MYSQL_USER=root", "MYSQL_PASSWORD=pilot", "MYSQL_DATABASE=app",
 			}
 		},
@@ -50,13 +50,13 @@ var catalog = map[string]svcConf{
 	"redis": {
 		Image: "redis:8-alpine", Port: 6379,
 		EnvFor: func(p int) []string {
-			return []string{fmt.Sprintf("REDIS_URL=redis://localhost:%d", p), "REDIS_HOST=localhost", fmt.Sprintf("REDIS_PORT=%d", p)}
+			return []string{fmt.Sprintf("REDIS_URL=redis://127.0.0.1:%d", p), "REDIS_HOST=127.0.0.1", fmt.Sprintf("REDIS_PORT=%d", p)}
 		},
 	},
 	"mongodb": {
 		Image: "mongo:8", Port: 27017,
 		EnvFor: func(p int) []string {
-			return []string{fmt.Sprintf("MONGODB_URI=mongodb://localhost:%d/app", p), "MONGODB_HOST=localhost", fmt.Sprintf("MONGODB_PORT=%d", p)}
+			return []string{fmt.Sprintf("MONGODB_URI=mongodb://127.0.0.1:%d/app", p), "MONGODB_HOST=127.0.0.1", fmt.Sprintf("MONGODB_PORT=%d", p)}
 		},
 	},
 }
@@ -91,49 +91,182 @@ func Provision(ctx context.Context, p Planner, prompt string) ([]string, error) 
 	return svcs, nil
 }
 
-// provision dockerizes the services the model picked, choosing a free host port
-// per service (default, else the next open one), writes .env, and returns the
-// env text to inject into the build. No-ops when docker is unavailable.
+// provision wires a project to backing services WITHOUT blasting docker: it reuses
+// ONE shared container per service kind (pilot-shared-<kind>, started once and
+// shared by every project) and gives this project its own namespace inside it — a
+// dedicated postgres/mysql DATABASE and a redis logical-DB index — so many projects
+// coexist on a single infra instance. It also assigns this project unique host ports
+// (PORT for the API, VITE_PORT for the frontend) so several apps run at once without
+// clashing. Writes .env and returns the env text. No-ops when docker is unavailable.
 func (o *Orchestrator) provision(ctx context.Context, prompt, workDir string, emit func(events.Event)) string {
-	// Idempotent: never clobber an existing .env or double-start containers.
+	// Idempotent: never clobber an existing .env or re-provision.
 	if _, err := os.Stat(filepath.Join(workDir, ".env")); err == nil {
 		return ""
 	}
-	if !dockerAvailable() {
-		emit(events.Text("\n[docker not available — skipping service provisioning; .env not written]\n"))
-		return ""
-	}
-	// Ask the model which services the spec needs; if that call fails (e.g. a
-	// client blip cancels it) or comes back empty, fall back to scanning the spec
-	// text so provisioning never silently no-ops on a spec that names its infra.
-	kinds, err := Provision(ctx, o.planner, prompt)
-	if err != nil || len(kinds) == 0 {
-		if err != nil {
-			emit(events.Text("\n[service planner failed (" + err.Error() + "); inferring services from the spec]\n"))
-		}
-		kinds = inferServices(prompt)
-	}
-	if len(kinds) == 0 {
-		return ""
-	}
+	slug := projectSlug(workDir)
 	var lines []string
-	for _, kind := range kinds {
-		svc := catalog[kind]
-		name := fmt.Sprintf("pilot-%s-%s", shortHash(workDir), kind)
-		port, err := startContainer(name, svc)
-		if err != nil {
-			emit(events.Text("\n[could not start " + kind + " (" + err.Error() + ")]\n"))
-			continue
+
+	if dockerAvailable() {
+		kinds, err := Provision(ctx, o.planner, prompt)
+		if err != nil || len(kinds) == 0 {
+			if err != nil {
+				emit(events.Text("\n[service planner failed (" + err.Error() + "); inferring services from the spec]\n"))
+			}
+			kinds = inferServices(prompt)
 		}
-		emit(events.Text(fmt.Sprintf("\n[provisioned %s → localhost:%d (docker: %s)]\n", kind, port, name)))
-		lines = append(lines, svc.EnvFor(port)...)
+		for _, kind := range kinds {
+			svc, ok := catalog[kind]
+			if !ok {
+				continue
+			}
+			port, err := sharedInfra(kind, svc)
+			if err != nil {
+				emit(events.Text("\n[could not start shared " + kind + " (" + err.Error() + ")]\n"))
+				continue
+			}
+			switch kind {
+			case "postgres":
+				if err := ensurePGDatabase(port, slug); err != nil {
+					emit(events.Text("\n[warn: could not create database " + slug + ": " + err.Error() + "]\n"))
+				}
+				lines = append(lines,
+					fmt.Sprintf("DATABASE_URL=postgresql://pilot:pilot@127.0.0.1:%d/%s", port, slug),
+					"POSTGRES_HOST=127.0.0.1", fmt.Sprintf("POSTGRES_PORT=%d", port),
+					"POSTGRES_USER=pilot", "POSTGRES_PASSWORD=pilot", "POSTGRES_DB="+slug)
+				emit(events.Text(fmt.Sprintf("\n[postgres: shared pilot-shared-postgres:%d, database '%s']\n", port, slug)))
+			case "mysql":
+				if err := ensureMySQLDatabase(port, slug); err != nil {
+					emit(events.Text("\n[warn: could not create mysql database " + slug + ": " + err.Error() + "]\n"))
+				}
+				lines = append(lines,
+					fmt.Sprintf("DATABASE_URL=mysql://root:pilot@127.0.0.1:%d/%s", port, slug),
+					"MYSQL_HOST=127.0.0.1", fmt.Sprintf("MYSQL_PORT=%d", port),
+					"MYSQL_USER=root", "MYSQL_PASSWORD=pilot", "MYSQL_DATABASE="+slug)
+				emit(events.Text(fmt.Sprintf("\n[mysql: shared pilot-shared-mysql:%d, database '%s']\n", port, slug)))
+			case "redis":
+				idx := redisIndex(slug)
+				lines = append(lines,
+					fmt.Sprintf("REDIS_URL=redis://127.0.0.1:%d/%d", port, idx),
+					"REDIS_HOST=127.0.0.1", fmt.Sprintf("REDIS_PORT=%d", port),
+					fmt.Sprintf("REDIS_DB=%d", idx), "REDIS_NAMESPACE="+slug)
+				emit(events.Text(fmt.Sprintf("\n[redis: shared pilot-shared-redis:%d, logical db %d, namespace '%s']\n", port, idx, slug)))
+			case "mongodb":
+				lines = append(lines,
+					fmt.Sprintf("MONGODB_URI=mongodb://127.0.0.1:%d/%s", port, slug),
+					"MONGODB_HOST=127.0.0.1", fmt.Sprintf("MONGODB_PORT=%d", port), "MONGODB_DB="+slug)
+				emit(events.Text(fmt.Sprintf("\n[mongodb: shared pilot-shared-mongodb:%d, database '%s']\n", port, slug)))
+			}
+		}
+	} else {
+		emit(events.Text("\n[docker not available — services use in-app fallbacks (e.g. sqlite); no .env services]\n"))
 	}
-	if len(lines) == 0 {
-		return ""
-	}
+
+	// Assign unique app ports so multiple generated apps run at once. Spread the
+	// starting point by project so two projects rarely target the same port.
+	apiPort := freePort(8000 + int(hashMod(slug, 60))*10)
+	vitePort := freePort(5173 + int(hashMod(slug, 60))*2)
+	lines = append(lines, fmt.Sprintf("PORT=%d", apiPort), fmt.Sprintf("VITE_PORT=%d", vitePort))
+	emit(events.Text(fmt.Sprintf("\n[ports: API :%d, frontend :%d]\n", apiPort, vitePort)))
+
 	env := strings.Join(lines, "\n") + "\n"
 	_ = os.WriteFile(filepath.Join(workDir, ".env"), []byte(env), 0o644)
 	return env
+}
+
+// projectSlug derives a DB/namespace-safe name from the project dir (lowercase,
+// alnum + underscore, leading letter) so it is a valid postgres database name.
+func projectSlug(workDir string) string {
+	base := strings.ToLower(filepath.Base(workDir))
+	var b strings.Builder
+	for _, r := range base {
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' {
+			b.WriteRune(r)
+		} else {
+			b.WriteByte('_')
+		}
+	}
+	s := strings.Trim(b.String(), "_")
+	if s == "" || (s[0] >= '0' && s[0] <= '9') {
+		s = "app_" + s
+	}
+	if len(s) > 40 {
+		s = s[:40]
+	}
+	return s
+}
+
+// hashMod returns a stable non-negative hash of s modulo n.
+func hashMod(s string, n int) int {
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(s))
+	return int(h.Sum32() % uint32(n))
+}
+
+// redisIndex maps a project to one of redis' 16 logical DBs.
+func redisIndex(slug string) int { return hashMod(slug, 16) }
+
+// sharedInfra ensures ONE shared container for a service kind (pilot-shared-<kind>),
+// started once and reused by every project, and returns its published host port.
+func sharedInfra(kind string, s svcConf) (int, error) {
+	name := "pilot-shared-" + kind
+	if port := runningHostPort(name, s.Port); port > 0 {
+		return port, nil
+	}
+	// Not running: remove any stopped remnant and start it on a free host port.
+	return startContainer(name, s)
+}
+
+// runningHostPort returns the host port a running container publishes for the given
+// internal port, or 0 if the container is not running.
+func runningHostPort(name string, internal int) int {
+	out, err := exec.Command("docker", "ps", "--filter", "name=^"+name+"$",
+		"--format", "{{.Ports}}").CombinedOutput()
+	if err != nil {
+		return 0
+	}
+	// e.g. "0.0.0.0:5433->5432/tcp, [::]:5433->5432/tcp"
+	for _, part := range strings.Split(string(out), ",") {
+		part = strings.TrimSpace(part)
+		if !strings.Contains(part, fmt.Sprintf("->%d/", internal)) {
+			continue
+		}
+		if i := strings.LastIndex(part[:strings.Index(part, "->")], ":"); i >= 0 {
+			var p int
+			if _, e := fmt.Sscanf(part[i+1:strings.Index(part, "->")], "%d", &p); e == nil {
+				return p
+			}
+		}
+	}
+	return 0
+}
+
+// ensurePGDatabase creates the per-project database in the shared postgres if it
+// does not already exist (createdb errors harmlessly when it does).
+func ensurePGDatabase(port int, slug string) error {
+	// Wait for postgres to accept connections, then create the db (idempotent).
+	_ = exec.Command("docker", "exec", "pilot-shared-postgres", "sh", "-c",
+		"for i in $(seq 1 30); do pg_isready -U pilot && break; sleep 1; done").Run()
+	out, err := exec.Command("docker", "exec", "pilot-shared-postgres",
+		"createdb", "-U", "pilot", slug).CombinedOutput()
+	if err != nil && strings.Contains(strings.ToLower(string(out)), "already exists") {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// ensureMySQLDatabase creates the per-project database in the shared mysql.
+func ensureMySQLDatabase(port int, slug string) error {
+	_ = exec.Command("docker", "exec", "pilot-shared-mysql", "sh", "-c",
+		"for i in $(seq 1 30); do mysqladmin ping -uroot -ppilot --silent && break; sleep 1; done").Run()
+	out, err := exec.Command("docker", "exec", "pilot-shared-mysql",
+		"mysql", "-uroot", "-ppilot", "-e", "CREATE DATABASE IF NOT EXISTS `"+slug+"`").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("%s", strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 func dockerAvailable() bool {
@@ -176,7 +309,9 @@ func startContainer(name string, s svcConf) (int, error) {
 	var lastErr error
 	for i := 0; i < 50; i++ {
 		port = freePort(port)
-		args := []string{"run", "-d", "--name", name, "-p", fmt.Sprintf("%d:%d", port, s.Port)}
+		// --restart unless-stopped so shared infra survives a docker daemon restart
+		// (otherwise every project pointing at it breaks when the daemon bounces).
+		args := []string{"run", "-d", "--restart", "unless-stopped", "--name", name, "-p", fmt.Sprintf("%d:%d", port, s.Port)}
 		args = append(args, s.RunArgs...)
 		args = append(args, s.Image)
 		out, err := exec.Command("docker", args...).CombinedOutput()

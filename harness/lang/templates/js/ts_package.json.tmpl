@@ -4,19 +4,27 @@
   "private": true,
   "main": "dist/index.js",
   "scripts": {
-    "dev": "ts-node src/index.ts",
+    "dev": "ts-node --transpile-only src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js"{{if .has_postgres}},
+    "migrate": "ts-node --transpile-only src/migrate.ts"{{end}}
   },
   "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
     "express": "^4.19.2"{{if .has_postgres}},
-    "pg": "^8.12.0"{{end}}
+    "pg": "^8.12.0"{{end}}{{if and .needs_auth .has_postgres}},
+    "bcryptjs": "^2.4.3",
+    "jsonwebtoken": "^9.0.2"{{end}}
   },
   "devDependencies": {
     "typescript": "^5.4.5",
     "ts-node": "^10.9.2",
     "@types/node": "^20.12.0",
+    "@types/cors": "^2.8.17",
     "@types/express": "^4.17.21"{{if .has_postgres}},
-    "@types/pg": "^8.11.6"{{end}}
+    "@types/pg": "^8.11.6"{{end}}{{if and .needs_auth .has_postgres}},
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.6"{{end}}
   }
 }

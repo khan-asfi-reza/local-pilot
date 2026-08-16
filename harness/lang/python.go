@@ -88,16 +88,26 @@ func pyRecipe(framework string) Recipe {
 	default: // fastapi
 		return Recipe{
 			Framework: "fastapi", Requires: []string{"python3"}, Timeout: 180 * time.Second,
-			Project: "app", App: "app", Settings: "app/config.py",
-			Stack: "FastAPI (Python)", Entry: ".venv/bin/uvicorn main:app --reload",
+			Project: "app", App: "app", Settings: "app/main.py",
+			Stack: "FastAPI (Python)", Entry: ".venv/bin/uvicorn app.main:app --reload",
 			Install: []Cmd{venv, {Bin: ".venv/bin/pip", Args: []string{"install", "--quiet", "fastapi", "uvicorn[standard]"}}},
 			Post: []Post{
-				{Run: &Cmd{Bin: ".venv/bin/pip", Args: []string{"install", "--quiet", "sqlalchemy", "psycopg[binary]"}}, When: "has:postgres"},
-				{Render: "python/fastapi_main.py.tmpl", To: "main.py"},
+				{Run: &Cmd{Bin: ".venv/bin/pip", Args: []string{"install", "--quiet", "psycopg[binary]"}}, When: "has:postgres"},
+				// sqlalchemy whenever there is a DB layer (postgres OR an auth module that
+				// needs the User model) — db.py falls back to sqlite so it works with no docker.
+				{Run: &Cmd{Bin: ".venv/bin/pip", Args: []string{"install", "--quiet", "sqlalchemy"}}, When: "has:postgres"},
+				{Run: &Cmd{Bin: ".venv/bin/pip", Args: []string{"install", "--quiet", "sqlalchemy"}}, When: "kw:jwt|auth|login|password|token|register|signup"},
+				{Run: &Cmd{Bin: ".venv/bin/pip", Args: []string{"install", "--quiet", "bcrypt", "python-jose[cryptography]", "python-multipart"}}, When: "kw:jwt|auth|login|password|token|register|signup"},
+				// FastAPI code lives in an app/ package (the layout models naturally build
+				// into) so generated feature modules import `from app.db/app.auth import ...`.
+				{Render: "python/fastapi_init.py.tmpl", To: "app/__init__.py"},
+				{Render: "python/fastapi_main.py.tmpl", To: "app/main.py"},
 				{Render: "python/fastapi_requirements.txt.tmpl", To: "requirements.txt"},
-				{Render: "python/fastapi_db.py.tmpl", To: "db.py", When: "has:postgres"},
+				{Render: "python/fastapi_db.py.tmpl", To: "app/db.py", When: "has:postgres"},
+				{Render: "python/fastapi_db.py.tmpl", To: "app/db.py", When: "kw:jwt|auth|login|password|token|register|signup"},
+				{Render: "python/fastapi_auth.py.tmpl", To: "app/auth.py", When: "kw:jwt|auth|login|password|token|register|signup"},
 			},
-			Layout: []string{"main.py", "requirements.txt"},
+			Layout: []string{"app/main.py", "requirements.txt"},
 		}
 	}
 }

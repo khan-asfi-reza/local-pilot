@@ -27,4 +27,11 @@ Import every icon you use — a missing import is a blank page.
 - Fetch data from the actual endpoints; show loading and empty states; reflect updates in the UI.
 - Import every component/hook you reference so nothing 404s or blanks the page.
 
+## Must-not-break (any one blanks the page)
+- **One `export default` per file.** Two = fatal parse error → white page.
+- **Never render an object / array / Date directly in JSX** — format to a string first (`{d.toLocaleDateString()}`, `{String(x)}`). A raw object child crashes the whole app.
+- **Style with the framework's utilities on the elements** (Tailwind: `className="rounded-xl bg-white shadow p-4"`). Don't invent a semantic class name you don't also style — an unstyled class looks blank.
+- **Wire every page into the router** and make every link/route resolve to a real element.
+- **Reach the backend at `/api/...`** (the dev proxy is preconfigured) — don't edit build config or hardcode `localhost:PORT`.
+
 Ship UI that a user could actually click through and use.

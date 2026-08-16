@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -265,7 +266,7 @@ func writeFileTool() *Tool {
 				return nil, nil, err
 			}
 			old := readIfExists(p)
-			content := args.Str("content")
+			content := deEscapeSource(args.Str("path"), args.Str("content"))
 			if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 				return nil, nil, parentDirError(args.Str("path"), err)
 			}
@@ -277,6 +278,34 @@ func writeFileTool() *Tool {
 			return map[string]any{"ok": true, "path": args.Str("path"), "bytes_written": len(content)}, diff, nil
 		},
 	}
+}
+
+var jsxEscapeRe = regexp.MustCompile(`(?i)\\u00(3c|3e|26)`)
+
+// deEscapeSource undoes JSON over-escaping that a model sometimes writes literally
+// into source: `<`/`>`/`&` instead of `<`/`>`/`&`. Those sequences
+// never legitimately appear in JS/TS/JSX/HTML source, so decoding them is safe and
+// stops a whole class of unparseable generated files. Other files pass through.
+func deEscapeSource(path, content string) string {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".vue", ".svelte", ".html":
+	default:
+		return content
+	}
+	if !strings.Contains(content, `\u00`) {
+		return content
+	}
+	return jsxEscapeRe.ReplaceAllStringFunc(content, func(m string) string {
+		switch strings.ToLower(m[len(m)-2:]) {
+		case "3c":
+			return "<"
+		case "3e":
+			return ">"
+		case "26":
+			return "&"
+		}
+		return m
+	})
 }
 
 // editSpec is one anchor edit: replace old_text with new_text.
@@ -333,6 +362,7 @@ func editFileTool() *Tool {
 			if err != nil {
 				return nil, nil, err
 			}
+			updated = deEscapeSource(args.Str("path"), updated)
 			if err := os.WriteFile(p, []byte(updated), 0o644); err != nil {
 				return nil, nil, err
 			}

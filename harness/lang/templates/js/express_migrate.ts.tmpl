@@ -1,0 +1,73 @@
+import './env';
+import fs from 'fs';
+import path from 'path';
+import { pool } from './db';
+
+// Splits a .sql file into statements, respecting $$-dollar-quoted function bodies
+// (which contain their own semicolons).
+function splitStatements(sql: string): string[] {
+  const out: string[] = [];
+  let buf = '';
+  let tag: string | null = null;
+  for (let i = 0; i < sql.length; i++) {
+    const ch = sql[i];
+    if (tag === null && ch === '$') {
+      const m = sql.slice(i).match(/^\$[A-Za-z0-9_]*\$/);
+      if (m) { tag = m[0]; buf += tag; i += tag.length - 1; continue; }
+    } else if (tag !== null && ch === '$' && sql.slice(i).startsWith(tag)) {
+      buf += tag; i += tag.length - 1; tag = null; continue;
+    }
+    if (ch === ';' && tag === null) { if (buf.trim()) out.push(buf.trim()); buf = ''; continue; }
+    buf += ch;
+  }
+  if (buf.trim()) out.push(buf.trim());
+  return out;
+}
+
+// A statement whose failure must abort the migration — creating the schema itself.
+// Everything else (indexes, functions, triggers, views, comments) is best-effort,
+// so a buggy generated index/function never leaves the app with no tables.
+function isEssential(stmt: string): boolean {
+  const u = stmt.trimStart().toUpperCase();
+  return u.startsWith('CREATE TABLE') || u.startsWith('ALTER TABLE') ||
+    u.startsWith('CREATE TYPE') || u.startsWith('CREATE SCHEMA') || u.startsWith('CREATE EXTENSION');
+}
+
+// Applies every backend/migrations/*.sql in order, per statement, tracking applied
+// files in schema_migrations. Non-essential statements that fail are warned and
+// skipped; a failing table/type/alter aborts. Safe to re-run. `npm run migrate`.
+async function main() {
+  const dir = path.resolve(__dirname, '../migrations');
+  if (!fs.existsSync(dir)) { console.log('no migrations/ directory'); return; }
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.sql')).sort();
+
+  await pool.query('CREATE TABLE IF NOT EXISTS schema_migrations (name TEXT PRIMARY KEY, run_at TIMESTAMPTZ DEFAULT now())');
+  const done = new Set((await pool.query('SELECT name FROM schema_migrations')).rows.map((r) => r.name));
+
+  for (const file of files) {
+    if (done.has(file)) { console.log(`skip  ${file}`); continue; }
+    const statements = splitStatements(fs.readFileSync(path.join(dir, file), 'utf8'));
+    let skipped = 0;
+    for (const stmt of statements) {
+      try {
+        await pool.query(stmt);
+      } catch (err) {
+        const msg = (err as Error).message;
+        // "already exists" makes re-running idempotent (a CREATE TYPE/TABLE from a
+        // prior partial run); skip it regardless of whether it is essential.
+        if (/already exists/i.test(msg)) { skipped++; continue; }
+        if (isEssential(stmt)) {
+          console.error(`FAIL  ${file}: ${msg}\n  in: ${stmt.slice(0, 120)}`);
+          throw err;
+        }
+        skipped++;
+        console.warn(`warn  ${file}: skipped a non-essential statement (${msg})`);
+      }
+    }
+    await pool.query('INSERT INTO schema_migrations (name) VALUES ($1) ON CONFLICT DO NOTHING', [file]);
+    console.log(`apply ${file}${skipped ? ` (${skipped} non-essential statement(s) skipped)` : ''}`);
+  }
+  console.log('migrations complete');
+}
+
+main().then(() => process.exit(0)).catch(() => process.exit(1));

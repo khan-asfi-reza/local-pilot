@@ -118,7 +118,8 @@ func TestScaffoldTemplateOnly(t *testing.T) {
 
 func TestScaffoldEnvWiring(t *testing.T) {
 	// With a provisioned postgres .env, the FastAPI recipe's has_postgres guard
-	// must fire and render db.py. This needs python3; skip if absent.
+	// must fire and render the DB module. FastAPI now scaffolds into an app/ package,
+	// so it lands at app/db.py. This needs python3; skip if absent.
 	if !haveAll("python3") {
 		t.Skip("python3 not installed")
 	}
@@ -130,8 +131,8 @@ func TestScaffoldEnvWiring(t *testing.T) {
 	if err != nil {
 		t.Fatalf("scaffold fastapi: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "db.py")); err != nil {
-		t.Errorf("db.py should be rendered when postgres is provisioned: %v", err)
+	if _, err := os.Stat(filepath.Join(dir, "app", "db.py")); err != nil {
+		t.Errorf("app/db.py should be rendered when postgres is provisioned: %v", err)
 	}
 	if res.Entry == "" {
 		t.Errorf("entry should be set")

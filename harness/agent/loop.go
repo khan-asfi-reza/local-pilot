@@ -4,12 +4,46 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"harness/harness/events"
 	"harness/harness/model"
 	"harness/harness/tools"
 )
+
+var digitsRe = regexp.MustCompile(`\d+`)
+
+// canServe reports whether this run may start a long-lived server: only when the
+// `serve` tool is available (empty allowed = top-level run with all tools). An
+// orchestrated child's allow-list omits serve, so it must fix code, not run servers.
+func canServe(allowed []string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	for _, t := range allowed {
+		if t == "serve" {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeCall builds a repeat key that ignores volatile numbers, so retries that
+// differ only by a port or a timeout collapse to the same key. For shell_run it
+// normalizes the command string; for other tools it normalizes the raw arguments.
+func normalizeCall(name, args string) string {
+	cmd := args
+	var m map[string]any
+	if json.Unmarshal([]byte(args), &m) == nil {
+		if c, ok := m["command"].(string); ok && c != "" {
+			cmd = c
+		}
+	}
+	cmd = digitsRe.ReplaceAllString(cmd, "N")
+	cmd = strings.Join(strings.Fields(cmd), " ")
+	return name + "|" + cmd
+}
 
 // action is one structured-JSON step from the planner: a reasoning sentence, the
 // tool to call (or "final" to end), and its arguments.
@@ -118,8 +152,10 @@ func (a *Agent) Run(ctx context.Context, req Request, emit func(events.Event), c
 // dispatched and fed back as role:"tool" messages; a turn with none is the final.
 func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Event), confirm tools.ConfirmFunc, system string, defs []model.ToolDef, env tools.Env, conv []model.Message, changed map[string]bool) []model.Message {
 	seen := map[string]int{}
+	seenNorm := map[string]int{}
 	repeatNudged := map[string]bool{}
 	totalTokens := 0
+	serverAttempts := 0
 	debugInjected := false
 	serveInjected := false
 	depsInjected := false
@@ -240,6 +276,12 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 					driftNudged = true
 					conv = append(conv, model.Message{Role: "user", Content: driftMsg(diff.Path, targets)})
 				}
+				// A landed edit is real progress: reset the repeat counters so an
+				// edit→re-verify→edit loop (e.g. fixing several routes, re-running the
+				// same check each time) is not mistaken for a stuck loop. Pure read/run
+				// loops with no edits still trip the breakers below.
+				seen = map[string]int{}
+				seenNorm = map[string]int{}
 			}
 
 			conv = append(conv, model.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: result})
@@ -268,13 +310,46 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 				return conv
 			}
 
-			if !serveInjected && tc.Function.Name == "shell_run" {
+			// Near-duplicate breaker: a small model often retries the SAME command with
+			// only a number changed (port 8043→8044, sleep 42→43) after a refusal, so the
+			// exact-key breaker above never fires. Collapse volatile numbers and catch the
+			// pattern: numbers are never the fix — the code is.
+			nkey := normalizeCall(tc.Function.Name, tc.Function.Arguments)
+			seenNorm[nkey]++
+			if seenNorm[nkey] == 3 && !repeatNudged[nkey] {
+				repeatNudged[nkey] = true
+				conv = append(conv, model.Message{Role: "user", Content: "You have retried near-identical commands that differ only by a number (a port, a timeout). Changing the number will NOT fix this and you do not need to start a server — that is handled for you. STOP running commands: open the file the error names and EDIT the code to fix the actual error. If it is already fixed, give your final answer now."})
+			} else if seenNorm[nkey] >= 5 {
+				summary := strings.TrimSpace(msg.Content)
+				if summary == "" {
+					summary = stuckSummary(env.WorkDir, result)
+				}
+				emit(events.Text(summary))
+				conv = append(conv, model.Message{Role: "assistant", Content: summary})
+				emit(events.Done())
+				return conv
+			}
+
+			if tc.Function.Name == "shell_run" {
 				var argm map[string]any
 				_ = json.Unmarshal([]byte(tc.Function.Arguments), &argm)
 				if cmd, _ := argm["command"].(string); tools.ServerStartHint(cmd) != "" {
-					if body := a.skills.bodies["serving"]; body != "" {
-						conv = append(conv, model.Message{Role: "user", Content: "To run and verify a server, follow this procedure:\n" + body})
+					serverAttempts++
+					if canServe(req.Allowed) {
+						if !serveInjected {
+							if body := a.skills.bodies["serving"]; body != "" {
+								conv = append(conv, model.Message{Role: "user", Content: "To run and verify a server, follow this procedure:\n" + body})
+								serveInjected = true
+							}
+						}
+					} else if serverAttempts >= 2 && !serveInjected {
+						// A child without the serve tool must NOT try to run a server: it
+						// blocks or fails, and the evaluator already boots and re-tests after
+						// each edit. Redirect it to editing — this is the flail a boot-repair
+						// child falls into (it varies the command each time, so the
+						// near-duplicate breaker above does not catch it).
 						serveInjected = true
+						conv = append(conv, model.Message{Role: "user", Content: "Stop trying to start the server — you do NOT need to run it, and it will not help. The app is booted and re-tested for you automatically after you edit. Open the file the error names, fix it with edit_file/write_file, then give your final answer."})
 					}
 				}
 			}
@@ -316,6 +391,8 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 // runJSON drives the grammar-constrained JSON-ReAct fallback (tool_mode "json").
 func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event), confirm tools.ConfirmFunc, system string, schema json.RawMessage, env tools.Env, conv []model.Message, changed map[string]bool) []model.Message {
 	seen := map[string]int{}
+	seenNorm := map[string]int{}
+	normNudged := map[string]bool{}
 	totalTokens := 0
 	debugInjected := false
 	writesSinceRun := 0 // file writes since the last time anything was executed
@@ -423,6 +500,10 @@ func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event
 				driftNudged = true
 				conv = append(conv, model.Message{Role: "user", Content: driftMsg(diff.Path, targets)})
 			}
+			// A landed edit is progress — reset the repeat counters so edit→verify→edit
+			// is not mistaken for a stuck loop (see runNative).
+			seen = map[string]int{}
+			seenNorm = map[string]int{}
 		}
 
 		// Detect a repeated action with the same result. Rather than hard-stop on
@@ -433,6 +514,21 @@ func (a *Agent) runJSON(ctx context.Context, req Request, emit func(events.Event
 		if seen[key] == 2 {
 			conv = append(conv, model.Message{Role: "user", Content: "You just repeated the SAME action and got the SAME result. Do not run it again. Read that result carefully and take a genuinely different next step — fix the actual file the error names, or use a different tool. If the task is already complete, give your final answer instead."})
 		} else if seen[key] >= 3 {
+			summary := stuckSummary(env.WorkDir, result)
+			emit(events.Text(summary))
+			conv = append(conv, model.Message{Role: "assistant", Content: summary})
+			emit(events.Done())
+			return conv
+		}
+
+		// Near-duplicate breaker: catch retries that differ only by a number (a port,
+		// a timeout) — the exact-key check above never fires on those.
+		nkey := normalizeCall(tc.Function.Name, tc.Function.Arguments)
+		seenNorm[nkey]++
+		if seenNorm[nkey] == 3 && !normNudged[nkey] {
+			normNudged[nkey] = true
+			conv = append(conv, model.Message{Role: "user", Content: "You have retried near-identical commands that differ only by a number (a port, a timeout). Changing the number will NOT fix this and you do not need to start a server — that is handled for you. STOP running commands: open the file the error names and EDIT the code to fix the actual error. If it is already fixed, give your final answer now."})
+		} else if seenNorm[nkey] >= 5 {
 			summary := stuckSummary(env.WorkDir, result)
 			emit(events.Text(summary))
 			conv = append(conv, model.Message{Role: "assistant", Content: summary})

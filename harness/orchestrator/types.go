@@ -34,6 +34,8 @@ type SubTask struct {
 	TargetFiles []string `json:"target_files"`
 	Acceptance  []string `json:"acceptance"`
 	SectionIdx  int      `json:"section_idx"`
+	Packages    []string `json:"packages"` // npm/pip packages this task's code imports; installed up front
+	Exposes     []string `json:"exposes"`  // the public interface this task publishes for others (the contract at its boundary)
 }
 
 type Plan struct {

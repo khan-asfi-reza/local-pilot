@@ -128,6 +128,15 @@ func (e agentExecutor) RunChild(ctx context.Context, prompt string, s orchestrat
 	return e.a.Run(ctx, req, emit, confirm)
 }
 
+// EvaluateProject runs the orchestrator's boot-and-run evaluator against an
+// existing project directory and repairs whatever stops it from working. Used by
+// the evalfix command to iterate the harness against an already-generated app.
+func (a *Agent) EvaluateProject(ctx context.Context, workDir string, emit func(events.Event), confirm tools.ConfirmFunc) {
+	pol := orchestrator.Policy{MaxParallel: boundParallelism(), MaxRetries: 2}
+	o := orchestrator.New(agentPlanner{a}, agentExecutor{a}, orchestrator.OSFiles{}, pol)
+	o.EvaluateDir(ctx, workDir, emit, confirm)
+}
+
 func (a *Agent) intake(ctx context.Context, prompt string) *orchestrator.Contract {
 	c, err := orchestrator.Intake(ctx, agentPlanner{a}, prompt)
 	if err != nil {

@@ -1,0 +1,11 @@
+-- Authentication schema. Named 000_ so it runs FIRST, letting feature tables
+-- reference users(id). Provided by the scaffold — do NOT recreate the users table
+-- in another migration; add columns with ALTER TABLE if a feature needs them.
+CREATE TABLE IF NOT EXISTS users (
+  id SERIAL PRIMARY KEY,
+  email TEXT UNIQUE NOT NULL,
+  password_hash TEXT NOT NULL,
+  name TEXT,
+  role TEXT NOT NULL DEFAULT 'member',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

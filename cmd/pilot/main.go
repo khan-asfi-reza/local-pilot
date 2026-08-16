@@ -104,6 +104,16 @@ func ensureStack() (cfgPath, name string, err error) {
 	if err != nil {
 		return
 	}
+	// Only start/manage a LOCAL ollama when the default model actually lives on
+	// localhost. A remote default (another box on the LAN) must NOT trigger a local
+	// server — starting one wastes resources and can hijack requests.
+	if d := cfg.Default; d != "" {
+		if url, ok := cfg.URLFor(d); ok && url != "" && !isLocalOllama(url) {
+			fmt.Println(green("✓ ") + "default model is remote (" + url + ") — not starting a local ollama")
+			name = d
+			return
+		}
+	}
 	if err = ensureOllamaInstalled(); err != nil {
 		return
 	}
@@ -1096,6 +1106,14 @@ func killOllama() {
 		return
 	}
 	_ = exec.Command("pkill", "-x", "ollama").Run()
+}
+
+// isLocalOllama reports whether an ollama URL points at this machine (so a remote
+// default model does not trigger a local server).
+func isLocalOllama(url string) bool {
+	u := strings.ToLower(url)
+	return strings.Contains(u, "localhost") || strings.Contains(u, "127.0.0.1") ||
+		strings.Contains(u, "0.0.0.0") || strings.Contains(u, "::1")
 }
 
 func ollamaUp(url string) bool {

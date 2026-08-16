@@ -1,4 +1,5 @@
+import './env';
 import { Pool } from 'pg';
 
-// Connection string is provisioned into .env by the harness.
+// Connection string is provisioned into .env by the harness (loaded via ./env).
 export const pool = new Pool({ connectionString: process.env.DATABASE_URL });

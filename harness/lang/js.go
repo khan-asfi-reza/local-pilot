@@ -121,8 +121,12 @@ func jsRecipe(framework string) Recipe {
 			Post: []Post{
 				{Render: "js/ts_package.json.tmpl", To: "package.json"},
 				{Render: "js/tsconfig.json.tmpl", To: "tsconfig.json"},
+				{Render: "js/express_env.ts.tmpl", To: "src/env.ts"},
 				{Render: "js/express_index.ts.tmpl", To: "src/index.ts"},
 				{Render: "js/express_db.ts.tmpl", To: "src/db.ts", When: "has:postgres"},
+				{Render: "js/express_migrate.ts.tmpl", To: "src/migrate.ts", When: "has:postgres"},
+				{Render: "js/express_auth.ts.tmpl", To: "src/auth.ts", When: "has:postgres&kw:jwt|auth|login|password|token|register|signup"},
+				{Render: "js/express_auth_migration.sql.tmpl", To: "migrations/000_auth.sql", When: "has:postgres&kw:jwt|auth|login|password|token|register|signup"},
 				{Run: &Cmd{Bin: "npm", Args: []string{"install"}}},
 			},
 			Layout: []string{"package.json", "tsconfig.json", "src/index.ts"},

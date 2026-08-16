@@ -2,6 +2,9 @@ package orchestrator
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -12,10 +15,12 @@ import (
 )
 
 type Orchestrator struct {
-	planner Planner
-	exec    Executor
-	fc      FileChecker
-	pol     Policy
+	planner  Planner
+	exec     Executor
+	fc       FileChecker
+	pol      Policy
+	evalMu   sync.Mutex   // serializes the evaluator (npm/tsc/boot) across parallel sub-tasks
+	contract *APIContract // the API contract both sides build against (set in Execute)
 }
 
 func New(p Planner, e Executor, fc FileChecker, pol Policy) *Orchestrator {
@@ -23,6 +28,17 @@ func New(p Planner, e Executor, fc FileChecker, pol Policy) *Orchestrator {
 		fc = OSFiles{}
 	}
 	return &Orchestrator{planner: p, exec: e, fc: fc, pol: pol}
+}
+
+// EvaluateDir runs the final boot-and-run evaluator (install → migrate → boot →
+// probe → repair, plus frontend build/repair) against an already-built project.
+// It is the same pass Execute runs at the end, exposed so a broken project can be
+// re-evaluated and repaired without a full regeneration.
+func (o *Orchestrator) EvaluateDir(ctx context.Context, workDir string, emit func(events.Event), confirm tools.ConfirmFunc) {
+	if emit == nil {
+		emit = func(events.Event) {}
+	}
+	o.smokeAndRepair(ctx, workDir, serialize(emit), confirm)
 }
 
 // Execute runs the top-down pipeline (intake → enrich → chunk → decompose →
@@ -73,6 +89,30 @@ func (o *Orchestrator) Execute(ctx context.Context, prompt string, contract *Con
 	if env != "" {
 		stateText += "\n\nBACKING SERVICES (provisioned via docker — read ALL db/cache config from the .env file, never hardcode ports/hosts):\n" + env
 	}
+	stateText += authScaffoldNote(spec.WorkDir)
+
+	// Contract-first: design the whole REST API up front and make it the single
+	// source of truth. The backend implements it exactly; the frontend calls it only
+	// through a generated typed client (written into frontend/src/lib/api.ts), so the
+	// two sides cannot drift on paths or shapes. Also written as openapi.yaml.
+	cAPI, cErr := GenerateContract(ctx, o.planner, prompt)
+	if cErr != nil || len(cAPI.Endpoints) == 0 {
+		emit(events.Text("\n[contract design skipped (" + errText(cErr) + ") — building without a generated client]\n"))
+	}
+	if c := cAPI; cErr == nil && len(c.Endpoints) > 0 {
+		o.contract = &c
+		_ = os.WriteFile(filepath.Join(spec.WorkDir, "openapi.yaml"), []byte(c.openAPIYAML()), 0o644)
+		if raw, e := json.MarshalIndent(c, "", "  "); e == nil {
+			_ = os.WriteFile(filepath.Join(spec.WorkDir, "apispec.json"), raw, 0o644)
+		}
+		writeTSClient(spec.WorkDir, c)
+		emit(events.Text(fmt.Sprintf("\n[designed API contract: %d endpoints → openapi.yaml + typed client]\n", len(c.Endpoints))))
+		stateText += "\n\nAPI CONTRACT — the SINGLE SOURCE OF TRUTH (also in openapi.yaml). The backend MUST implement " +
+			"these endpoints EXACTLY (same method, path, request body, and response fields). The typed client " +
+			"frontend/src/lib/api.ts is ALREADY GENERATED from this contract — do NOT create a task to write or generate " +
+			"the API client; frontend tasks simply IMPORT its functions (e.g. listDoctors()) and NEVER hardcode a " +
+			"fetch('/api/...') path or invent an endpoint. Endpoints:\n" + c.renderForPrompt()
+	}
 
 	plan, err := Decompose(ctx, o.planner, contract, Outline(sections), stateText)
 	if err != nil || len(plan.Tasks) == 0 {
@@ -99,17 +139,77 @@ func (o *Orchestrator) Execute(ctx context.Context, prompt string, contract *Con
 		}
 	}
 
+	// Init phase: install every package the plan says its tasks need, up front, so
+	// no sub-task hits a missing import mid-build.
+	o.installPlanned(ctx, plan, spec.WorkDir, emit)
+
 	mem := NewMemory()
 	results := Schedule(ctx, dag, mem, o.pol, o.childExec(dag, sections, stateText, spec, emit, confirm), emit)
+	o.smokeAndRepair(ctx, spec.WorkDir, emit, confirm)
 	return o.finish(*contract, results, spec, emit)
 }
 
 func (o *Orchestrator) childExec(dag *DAG, sections []Section, stateText string, spec ChildSpec, emit func(events.Event), confirm tools.ConfirmFunc) ExecFunc {
+	fileMap := planFileMap(dag) // the whole project's file layout, shared with every child
 	return func(ctx context.Context, t SubTask, mem *Memory) Result {
 		existing := o.existingTargets(spec.WorkDir, t)
-		prompt := buildChildPrompt(t, sections, stateText, mem.Digest(dag.TransitiveDeps(t.ID)), existing)
+		prompt := buildChildPrompt(t, sections, stateText, fileMap, mem.Digest(dag.TransitiveDeps(t.ID)), existing)
 		return o.runAndVerify(ctx, t, prompt, spec, emit, confirm)
 	}
+}
+
+// planFileMap renders every sub-task's target files as a shared project map, so a
+// blind child knows the exact paths and names the other tasks produce and wires to
+// them instead of inventing parallel files.
+func planFileMap(d *DAG) string {
+	var tasks []SubTask
+	for _, id := range d.TopoIDs() {
+		tasks = append(tasks, d.Task(id))
+	}
+	return projectMap(tasks)
+}
+
+// projectMap renders the shared cross-task map every child sees: for each task, the
+// files it owns and the public interface it exposes. Independent children cannot
+// read each other's code, so this is how a consumer learns the EXACT paths and
+// contract strings a producer will publish — the single source of truth that keeps
+// them wired together. Domain-agnostic: exposes may be routes, signatures, CLI
+// flags, tables, message shapes — whatever couples the pieces.
+func projectMap(tasks []SubTask) string {
+	var b strings.Builder
+	for _, t := range tasks {
+		if len(t.TargetFiles) == 0 && len(t.Exposes) == 0 {
+			continue
+		}
+		b.WriteString(t.ID + " — " + t.Title + "\n")
+		if len(t.TargetFiles) > 0 {
+			b.WriteString("    files: " + strings.Join(t.TargetFiles, ", ") + "\n")
+		}
+		if len(t.Exposes) > 0 {
+			b.WriteString("    exposes: " + strings.Join(t.Exposes, " | ") + "\n")
+		}
+	}
+	return strings.TrimRight(b.String(), "\n")
+}
+
+// authScaffoldNote tells decomposition that auth is already built (the scaffold
+// dropped in a JWT+password module), so it plans features that USE it instead of a
+// redundant auth/users task that would clobber the working module.
+func authScaffoldNote(workDir string) string {
+	for _, p := range []string{"backend/app/auth.py", "app/auth.py", "backend/auth.py", "auth.py", "backend/src/auth.ts", "src/auth.ts"} {
+		if fileExists(filepath.Join(workDir, p)) {
+			return "\n\nAUTHENTICATION IS ALREADY IMPLEMENTED in " + p + " (a users table, register/login/me endpoints, " +
+				"and a token guard). Do NOT create a task for authentication, a users table, JWT, or password hashing — they " +
+				"exist. Feature tasks must IMPORT and use the provided auth (guard protected routes with it) and reference the " +
+				"existing users table for ownership (user_id)."
+		}
+	}
+	return ""
+}
+
+// planFileMap2 is the same map from a raw plan (the sequential fallback has no DAG).
+func planFileMap2(p Plan) string {
+	return projectMap(p.Tasks)
 }
 
 // runAndVerify runs one child and decides pass/fail. A task with declared target
@@ -127,6 +227,10 @@ func (o *Orchestrator) runAndVerify(ctx context.Context, t SubTask, prompt strin
 		tagged(ev)
 	}
 	o.exec.RunChild(ctx, prompt, childSpecFor(spec, t), emitChild, confirm)
+	// Layer 1 of the evaluator: right after this sub-task's child produced files,
+	// install any package it imported and repair a broken edit / bad syntax before
+	// the task is judged. Layer 2 (boot + run + repair) is the final smokeAndRepair.
+	o.evaluateTask(ctx, t, spec, emit, confirm)
 	written, missing := verifyStructural(o.fc, spec.WorkDir, t)
 	if len(t.TargetFiles) == 0 {
 		written, missing = sortedKeys(wrote), nil
@@ -144,9 +248,10 @@ func (o *Orchestrator) runAndVerify(ctx context.Context, t SubTask, prompt strin
 func (o *Orchestrator) runSequential(ctx context.Context, plan Plan, sections []Section, contract Contract, stateText string, spec ChildSpec, emit func(events.Event), confirm tools.ConfirmFunc) Summary {
 	mem := NewMemory()
 	results := map[string]Result{}
+	fileMap := planFileMap2(plan)
 	for _, t := range plan.Tasks {
 		existing := o.existingTargets(spec.WorkDir, t)
-		prompt := buildChildPrompt(t, sections, stateText, mem.Digest(t.Deps), existing)
+		prompt := buildChildPrompt(t, sections, stateText, fileMap, mem.Digest(t.Deps), existing)
 		emit(events.Text("\n▸ " + t.ID + ": " + t.Title + "\n"))
 		r := o.runAndVerify(ctx, t, prompt, spec, emit, confirm)
 		results[t.ID] = r
@@ -154,6 +259,7 @@ func (o *Orchestrator) runSequential(ctx context.Context, plan Plan, sections []
 			mem.Add(Note{TaskID: t.ID, Title: t.Title, Files: r.Written, Summary: r.Summary})
 		}
 	}
+	o.smokeAndRepair(ctx, spec.WorkDir, emit, confirm)
 	return o.finish(contract, results, spec, emit)
 }
 
@@ -233,11 +339,21 @@ func isFrontendTask(t SubTask) bool {
 	return false
 }
 
-func buildChildPrompt(t SubTask, sections []Section, stateText, digest, existing string) string {
+func buildChildPrompt(t SubTask, sections []Section, stateText, fileMap, digest, existing string) string {
 	var b strings.Builder
 	b.WriteString(t.Description)
 	if stateText != "" {
 		b.WriteString("\n\nProject state (canonical names & layout — match these EXACTLY):\n" + stateText + "\n")
+	}
+	if fileMap != "" {
+		b.WriteString("\n\nPROJECT MAP — every sub-task's files and the public interface it exposes. Other sub-tasks " +
+			"build what you don't own; you cannot see their code, so this is your ONLY source of truth for how the " +
+			"pieces connect. Rules: (1) import from these EXACT file paths and reuse these module/export names — never " +
+			"invent a parallel or differently-named version of something listed; (2) when you CONSUME another task's " +
+			"interface (call its route, function, table, command, event), use its `exposes` string VERBATIM; (3) when " +
+			"YOU build something another task exposes, implement it to match that exact string. Do not deviate from a " +
+			"listed contract:\n" +
+			fileMap + "\n")
 	}
 	if len(t.TargetFiles) > 0 {
 		b.WriteString("\n\nFiles you must create or modify (produce EXACTLY these, nothing else):\n")

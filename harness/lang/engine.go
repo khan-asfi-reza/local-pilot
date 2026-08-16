@@ -202,7 +202,20 @@ func (rec Recipe) vars(r Req) map[string]any {
 		"has_mysql":    strings.Contains(r.Env, "DATABASE_URL=mysql"),
 		"has_redis":    strings.Contains(r.Env, "REDIS_URL="),
 		"has_mongo":    strings.Contains(r.Env, "MONGODB_URI="),
+		"needs_auth":   needsAuth(r.Prompt),
 	}
+}
+
+// needsAuth reports whether the spec calls for user authentication, so the
+// scaffold can drop in a ready JWT+password auth module and users table.
+func needsAuth(prompt string) bool {
+	low := strings.ToLower(prompt)
+	for _, kw := range []string{"jwt", "auth", "login", "sign in", "sign-in", "signup", "sign up", "password", "bcrypt", "register", "session", "token"} {
+		if strings.Contains(low, kw) {
+			return true
+		}
+	}
+	return false
 }
 
 // whenMatches evaluates a post-step guard: "" always applies; tokens joined by
