@@ -29,8 +29,52 @@ import (
 var safeTools = []string{"code_run", "web_search"}
 
 // runMu serializes runs: the agent switches its active model per request, which
-// must not race across concurrent runs.
-var runMu sync.Mutex
+// must not race across concurrent runs. It is a FIFO fair lock, not a plain
+// mutex, so concurrent runs from many projects are served in arrival order —
+// one at a time, no starvation (OS-scheduler-style FCFS). This is why 5 projects
+// firing prompts at once each get their turn instead of one hogging the model.
+var runMu = &fairLock{}
+
+// fairLock is a first-come-first-served lock. Waiters queue and are handed the
+// lock in the exact order they arrived, so no run can be starved by a busy peer.
+type fairLock struct {
+	mu      sync.Mutex
+	waiters []chan struct{}
+	held    bool
+}
+
+func (f *fairLock) Lock() {
+	f.mu.Lock()
+	if !f.held {
+		f.held = true
+		f.mu.Unlock()
+		return
+	}
+	ch := make(chan struct{})
+	f.waiters = append(f.waiters, ch)
+	f.mu.Unlock()
+	<-ch // wait our turn; the current holder hands off to us in FIFO order
+}
+
+func (f *fairLock) Unlock() {
+	f.mu.Lock()
+	if len(f.waiters) > 0 {
+		next := f.waiters[0]
+		f.waiters = f.waiters[1:]
+		f.mu.Unlock()
+		close(next) // hand the lock directly to the next waiter (stays held)
+		return
+	}
+	f.held = false
+	f.mu.Unlock()
+}
+
+// QueueDepth reports how many runs are waiting behind the active one (for status).
+func (f *fairLock) QueueDepth() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.waiters)
+}
 
 type runRequest struct {
 	Messages         []model.Message `json:"messages"`
@@ -38,7 +82,7 @@ type runRequest struct {
 	WorkingDirectory string          `json:"working_directory"`
 	Model            string          `json:"model"`
 	FullAccess       bool            `json:"full_access"`
-	Mode             string          `json:"mode"`          // "ask" pauses on mutating ops; default "auto"
+	Mode             string          `json:"mode"`          // "plan" read-only, "ask" pauses on mutating ops; default "auto"
 	InjectSkills     []string        `json:"inject_skills"` // skills to inject silently regardless of detection (e.g. App Builder forces "app-builder")
 }
 
@@ -338,7 +382,11 @@ func main() {
 		// confirm is nil and the run never pauses.
 		mode := "auto"
 		var confirm tools.ConfirmFunc
-		if req.FullAccess && req.Mode == tools.ModeAsk {
+		if req.FullAccess && req.Mode == tools.ModePlan {
+			// Plan mode is read-only: dispatch refuses mutating tools, so the model
+			// produces a plan instead of touching files. No confirm channel needed.
+			mode = tools.ModePlan
+		} else if req.FullAccess && req.Mode == tools.ModeAsk {
 			mode = tools.ModeAsk
 			confirm = func(tool, summary string, diff *events.Diff) (tools.Decision, string) {
 				id := fmt.Sprintf("c%d", atomic.AddUint64(&confirmSeq, 1))

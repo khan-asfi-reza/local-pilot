@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { code } from '../../lib/api';
 
 let seq = 0;
@@ -7,6 +7,12 @@ const uid = (p) => `${p}${Date.now()}_${seq++}`;
 export function useCodeAgent(onFileChange, onActivity) {
   const [messages, setMessages] = useState([]);
   const [busy, setBusy] = useState(false);
+  // watching = a run started elsewhere (Telegram) is streaming into this project.
+  const [watching, setWatching] = useState(false);
+  const busyRef = useRef(false);
+  const watchingRef = useRef(false);
+  useEffect(() => { busyRef.current = busy; }, [busy]);
+  useEffect(() => { watchingRef.current = watching; }, [watching]);
   // In ask mode the run pauses on a mutating action; pendingConfirm holds the
   // details ({id, tool, summary, diff}) until the user approves or rejects.
   const [pendingConfirm, setPendingConfirm] = useState(null);
@@ -123,6 +129,37 @@ export function useCodeAgent(onFileChange, onActivity) {
     [appendText, appendReasoning, startTool, finishTool, pushError, setSid],
   );
 
+  // ingestExternal feeds an event from a run started elsewhere (Telegram) into
+  // the panel, so the Code IDE mirrors it live. It self-gates on `busy`: our own
+  // run renders from its own stream, and those events also reach the watch bus,
+  // so ignoring them while busy avoids double-rendering. finishTool (via
+  // handleEvent) already reloads changed files + refreshes the tree.
+  const ingestExternal = useCallback(
+    (root, ev) => {
+      if (busyRef.current) return;
+      if (ev.type === 'session') {
+        if (!watchingRef.current) setWatching(true);
+        return;
+      }
+      if (ev.type === 'done') {
+        if (watchingRef.current) {
+          setWatching(false);
+          refreshSessions(root);
+        }
+        return;
+      }
+      if (ev.type === 'confirm') {
+        // Approval belongs to whoever started the run (the Telegram buttons); just
+        // note it here rather than trying to drive it from the web too.
+        appendText('\n\n⏸ Waiting for approval in Telegram…\n');
+        return;
+      }
+      if (!watchingRef.current) setWatching(true);
+      handleEvent(ev);
+    },
+    [handleEvent, appendText, refreshSessions],
+  );
+
   // respondConfirm answers the current ask-mode prompt. The paused run then
   // continues streaming on the still-open connection. decision is
   // 'approve' | 'decline'; feedback redirects the model instead of a plain reject.
@@ -219,6 +256,31 @@ export function useCodeAgent(onFileChange, onActivity) {
     [syncRef, setSid],
   );
 
+  // openThread binds the panel to a specific session id (a thread): it loads that
+  // session if it exists on disk, or starts a blank conversation already bound to
+  // that id (a brand-new thread) so the first run persists under it. Unlike
+  // resume(), it never picks "the latest" — the parent decides which thread shows.
+  const openThread = useCallback(
+    async (root, sid) => {
+      if (!root || !sid) return;
+      try {
+        const s = await code.loadSession(root, sid);
+        const restored = (s.messages || [])
+          .filter((m) => m.role === 'user' || m.role === 'assistant')
+          .map((m) => ({ id: uid(m.role[0]), role: m.role, content: m.content || '', reasoning: '' }));
+        setSid(s.id);
+        setMessages(restored);
+        syncRef(restored);
+      } catch {
+        setSid(sid);
+        setMessages([]);
+        syncRef([]);
+      }
+      setPendingConfirm(null);
+    },
+    [setSid, syncRef],
+  );
+
   // resume restores the most recent session for a project (on open/reload), so
   // the conversation survives and matches what the terminal would show. It also
   // seeds the history list.
@@ -287,6 +349,9 @@ export function useCodeAgent(onFileChange, onActivity) {
   return {
     messages,
     busy,
+    watching,
+    ingestExternal,
+    openThread,
     send,
     stop,
     pendingConfirm,

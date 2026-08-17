@@ -148,11 +148,18 @@ func (a *Agent) Run(ctx context.Context, req Request, emit func(events.Event), c
 	return conv
 }
 
+// repeatArgCap is the real progress cap: the same tool called with the SAME
+// arguments this many times, with no file mutation in between, is a stuck loop
+// (regardless of whether the result text varies). Raw step count is only a distant
+// backstop (a.maxSteps); this is what normally stops a run.
+const repeatArgCap = 6
+
 // runNative drives the loop with native tool calls: each turn's tool_calls are
 // dispatched and fed back as role:"tool" messages; a turn with none is the final.
 func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Event), confirm tools.ConfirmFunc, system string, defs []model.ToolDef, env tools.Env, conv []model.Message, changed map[string]bool) []model.Message {
 	seen := map[string]int{}
 	seenNorm := map[string]int{}
+	seenArgs := map[string]int{}
 	repeatNudged := map[string]bool{}
 	totalTokens := 0
 	serverAttempts := 0
@@ -282,6 +289,7 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 				// loops with no edits still trip the breakers below.
 				seen = map[string]int{}
 				seenNorm = map[string]int{}
+				seenArgs = map[string]int{}
 			}
 
 			conv = append(conv, model.Message{Role: "tool", ToolCallID: tc.ID, Name: tc.Function.Name, Content: result})
@@ -300,6 +308,23 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 				repeatNudged[key] = true
 				conv = append(conv, model.Message{Role: "user", Content: "You just repeated the same action and got the same result — that gives no new information. If the change is already made and looks correct, STOP and reply with a one- or two-sentence summary now. Otherwise take a genuinely different step; do not read or run the same thing again."})
 			} else if seen[key] >= 4 {
+				summary := strings.TrimSpace(msg.Content)
+				if summary == "" {
+					summary = stuckSummary(env.WorkDir, result)
+				}
+				emit(events.Text(summary))
+				conv = append(conv, model.Message{Role: "assistant", Content: summary})
+				emit(events.Done())
+				return conv
+			}
+
+			// Args-only repeat cap: the same tool + same arguments, this many times with
+			// no landed edit in between, is stuck even when the result text differs (a
+			// flaky check, timestamped output). This is the primary limiter the user asked
+			// for — not a raw step count. Resets above on any file mutation.
+			argKey := tc.Function.Name + "|" + tc.Function.Arguments
+			seenArgs[argKey]++
+			if seenArgs[argKey] >= repeatArgCap {
 				summary := strings.TrimSpace(msg.Content)
 				if summary == "" {
 					summary = stuckSummary(env.WorkDir, result)

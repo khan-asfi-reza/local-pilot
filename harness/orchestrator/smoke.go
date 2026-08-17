@@ -119,8 +119,51 @@ func (o *Orchestrator) installPlanned(ctx context.Context, plan Plan, workDir st
 	}
 }
 
+// reassertViteProxy rewrites frontend/vite.config.ts to proxy /api to the backend
+// on the port from .env, undoing any broken proxy the model wrote. No-op unless a
+// fullstack layout (frontend/vite.config.ts + .env PORT) is present.
+func reassertViteProxy(workDir string, emit func(events.Event)) {
+	feCfg := filepath.Join(workDir, "frontend", "vite.config.ts")
+	if !fileExists(feCfg) {
+		return
+	}
+	envBlob := ""
+	if b, err := os.ReadFile(filepath.Join(workDir, ".env")); err == nil {
+		envBlob = string(b)
+	}
+	envVal := func(key string) string {
+		for _, ln := range strings.Split(envBlob, "\n") {
+			ln = strings.TrimSpace(ln)
+			if strings.HasPrefix(ln, key+"=") {
+				return strings.TrimSpace(strings.TrimPrefix(ln, key+"="))
+			}
+		}
+		return ""
+	}
+	be := envVal("PORT")
+	if be == "" {
+		return
+	}
+	fe := envVal("VITE_PORT")
+	if fe == "" {
+		fe = "5173"
+	}
+	cfg := "import { defineConfig } from 'vite'\n" +
+		"import react from '@vitejs/plugin-react'\n\n" +
+		"// Scaffold-owned: proxies /api to the backend. Do not edit by hand.\n" +
+		"export default defineConfig({\n  plugins: [react()],\n  server: {\n    port: " + fe + ",\n" +
+		"    strictPort: false,\n    proxy: { '/api': { target: 'http://localhost:" + be + "', changeOrigin: true } },\n  },\n})\n"
+	if err := os.WriteFile(feCfg, []byte(cfg), 0o644); err == nil {
+		emit(events.Text("\n[reasserted vite /api proxy -> backend :" + be + "]\n"))
+	}
+}
+
 // smokeAndRepair is the final, robust "make it actually run" pass.
 func (o *Orchestrator) smokeAndRepair(ctx context.Context, workDir string, emit func(events.Event), confirm tools.ConfirmFunc) {
+	// Re-assert the scaffold-owned frontend↔backend proxy: a model that rewrote
+	// vite.config.ts (the most common integration break) is corrected here so the
+	// finished app always reaches the API on the real port.
+	reassertViteProxy(workDir, emit)
 	apps := detectNodeApps(workDir)
 	if len(apps) == 0 {
 		return
@@ -386,6 +429,15 @@ func (o *Orchestrator) bootRepair(ctx context.Context, app nodeApp, emit func(ev
 				_ = os.RemoveAll(bootingSnap)
 			}
 			bootingSnap = snapshotSrc(app.dir)
+		} else if bootingSnap != "" {
+			// A previous repair broke a version that DID boot. Piling more edits on the
+			// broken tree spirals into "does not boot" forever (the 9B can't dig out).
+			// Roll back to the last booting version and re-probe, so the next repair
+			// attempt starts from a known-good state and only re-tries the endpoint fix.
+			restoreSrc(bootingSnap, app.dir)
+			installDepsFor(ctx, app)
+			emit(events.Text("  [" + app.label + "] a repair broke startup — reverted to the last booting version and retrying\n"))
+			continue
 		}
 		if round == maxBootRounds-1 {
 			if !booted && bootingSnap != "" {
@@ -1181,6 +1233,14 @@ func syntaxErrors(ctx context.Context, app *nodeApp) string {
 	}
 	out, _ := runTool(ctx, app.dir, 120*time.Second, "npx", "tsc", "--noEmit", "--skipLibCheck")
 	lines := tsSyntaxRe.FindAllString(out, -1)
+	// Import/export SHAPE mismatches are the #1 runtime breaker in generated apps
+	// (Vite: "does not provide an export named X"): a named import of a symbol the
+	// module doesn't export (TS2305/TS2724), or a default import of a module with no
+	// default export (TS2613/TS2614). These are semantic (TS2xxx) so the syntax
+	// filter above misses them. They all require the target module to EXIST with the
+	// wrong export shape — a not-yet-written sibling is TS2307 (ignored), so catching
+	// these does not false-positive on build order.
+	lines = append(lines, tsImportShapeRe.FindAllString(out, -1)...)
 	if len(lines) == 0 {
 		return ""
 	}
@@ -1188,6 +1248,8 @@ func syntaxErrors(ctx context.Context, app *nodeApp) string {
 }
 
 var tsSyntaxRe = regexp.MustCompile(`(?m)^.*error TS1\d{3}:.*$`)
+
+var tsImportShapeRe = regexp.MustCompile(`(?m)^.*error TS(?:2305|2613|2614|2724):.*$`)
 
 // installMissingDeps installs every package the app imports but does not have,
 // one at a time so one bad name doesn't block the rest. Returns those installed.

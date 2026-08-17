@@ -28,7 +28,10 @@ function splitStatements(sql: string): string[] {
 // Everything else (indexes, functions, triggers, views, comments) is best-effort,
 // so a buggy generated index/function never leaves the app with no tables.
 function isEssential(stmt: string): boolean {
-  const u = stmt.trimStart().toUpperCase();
+  // Strip leading line-comments/blank lines first, or a CREATE TABLE preceded by
+  // a `-- comment` is misread as non-essential and its failure is silently skipped
+  // (which leaves the schema missing tables).
+  const u = stmt.replace(/^(?:\s*--[^\n]*\n?)+/, '').trimStart().toUpperCase();
   return u.startsWith('CREATE TABLE') || u.startsWith('ALTER TABLE') ||
     u.startsWith('CREATE TYPE') || u.startsWith('CREATE SCHEMA') || u.startsWith('CREATE EXTENSION');
 }

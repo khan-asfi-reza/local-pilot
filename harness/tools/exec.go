@@ -134,6 +134,11 @@ func shellRunTool() *Tool {
 			cmd := newShellCmd(ctx, command)
 			cmd.Dir = env.WorkDir
 			cmd.Env = projectEnv()
+			// If the command backgrounds a long-running server (e.g. `node dist/index.js &`),
+			// the child inherits the stdout pipe and Wait() would block forever even after
+			// the timeout kills the shell. WaitDelay forces Wait() to return shortly after
+			// cancellation, closing the pipes; newShellCmd kills the whole process group.
+			cmd.WaitDelay = 5 * time.Second
 			return runCommand(cmd, command), nil, nil
 		},
 	}

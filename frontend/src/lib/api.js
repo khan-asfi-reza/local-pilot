@@ -298,6 +298,44 @@ export const code = {
       if (e?.name !== 'AbortError') onEvent({ type: 'error', message: String(e) });
     }
   },
+  // watchAgentEvents subscribes (read-only) to every run happening in `root`,
+  // including ones started from Telegram, so the Code IDE can mirror them live.
+  // It starts nothing; onEvent receives the same event shapes as streamCodeAgent.
+  // Pass an AbortSignal to stop watching (e.g. on project switch / unmount).
+  async watchAgentEvents(root, onEvent, signal) {
+    let res;
+    try {
+      res = await fetch(`${BASE}/code/agent/events?root=${encodeURIComponent(root)}`, { signal });
+    } catch (e) {
+      return; // watching is best-effort; a failed subscribe just shows nothing
+    }
+    if (!res.ok || !res.body) return;
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        let sep;
+        while ((sep = buffer.indexOf('\n\n')) >= 0) {
+          const frame = buffer.slice(0, sep);
+          buffer = buffer.slice(sep + 2);
+          const dataLine = frame.split('\n').find((l) => l.startsWith('data:'));
+          if (dataLine) {
+            try {
+              onEvent(JSON.parse(dataLine.slice(5).trim()));
+            } catch {
+              /* ignore malformed frame */
+            }
+          }
+        }
+      }
+    } catch {
+      /* aborted or connection dropped; caller re-subscribes if still open */
+    }
+  },
 };
 
 // profile is the owner profile used by onboarding + Settings. get() returns null

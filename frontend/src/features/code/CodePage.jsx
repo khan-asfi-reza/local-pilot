@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { code } from '../../lib/api';
 import { FileTree } from './FileTree';
 import { Editor } from './Editor';
-import { AgentPanel } from './AgentPanel';
+import { AgentThreads } from './AgentThreads';
 import { DiffReview } from './DiffReview';
 import { StartScreen } from './StartScreen';
 import { TerminalPanel } from './TerminalPanel';
@@ -295,7 +295,7 @@ export function CodePage() {
           />
         )}
       </div>
-      <AgentPanel
+      <AgentThreads
         root={root}
         activePath={activePath}
         tree={tree}

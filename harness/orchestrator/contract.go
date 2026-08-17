@@ -291,7 +291,12 @@ func (c APIContract) renderForPrompt() string {
 		return ""
 	}
 	var b strings.Builder
+	// Compute the client symbol names EXACTLY as generateTSClient does (same order,
+	// same uniqueName sequencing), so consumers import the real names and never
+	// invent ones like getV1UsersByUsernameResult that api.ts does not export.
+	names := map[string]int{}
 	for _, e := range c.Endpoints {
+		op := uniqueName(opName(e), names)
 		b.WriteString(e.Method + " " + e.Path)
 		if e.Auth {
 			b.WriteString("  [auth]")
@@ -306,7 +311,14 @@ func (c APIContract) renderForPrompt() string {
 		if e.ResponseList {
 			shape = "[" + shape + "]"
 		}
-		b.WriteString("\n    returns: " + shape + "\n")
+		b.WriteString("\n    returns: " + shape)
+		// The exact symbols api.ts exports for this endpoint — import these VERBATIM.
+		if len(e.Response) > 0 {
+			b.WriteString("\n    api.ts: import { " + op + ", type " + op + "Result } from '@/lib/api'  (call " + op + "(...))")
+		} else {
+			b.WriteString("\n    api.ts: import { " + op + " } from '@/lib/api'  (call " + op + "(...))")
+		}
+		b.WriteString("\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }

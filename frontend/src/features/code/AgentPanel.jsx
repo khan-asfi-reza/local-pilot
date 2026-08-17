@@ -200,6 +200,9 @@ function normalizeTool(m) {
 
 export function AgentPanel({
   root,
+  sid,
+  active = true,
+  source = 'web',
   activePath,
   tree,
   initialPrompt,
@@ -209,21 +212,21 @@ export function AgentPanel({
   onActivity,
   onConfirmChange,
   onViewDiff,
+  onBusyChange,
+  onUnread,
 }) {
   const {
     messages,
     busy,
+    watching,
+    ingestExternal,
+    openThread,
     send,
     stop,
     pendingConfirm,
     respondConfirm,
-    resume,
-    newSession,
-    sessions,
-    sessionId,
-    switchSession,
-    removeSession,
   } = useCodeAgent(onFileChange, onActivity);
+  const isTelegram = source === 'telegram';
   const [models, setModels] = useState([]);
   const [defaultModel, setDefaultModel] = useState(null);
   const [currentModel, setCurrentModel] = useState(null);
@@ -269,14 +272,14 @@ export function AgentPanel({
       .catch(() => {});
   }, []);
 
-  // Resume the project's latest session on open/reload, so the conversation
-  // persists (and matches what the terminal shows for the same folder).
+  // Bind this panel to its thread (session id). Each thread is a separate mounted
+  // panel, so a run in one keeps streaming while another is on screen.
   useEffect(() => {
     setResumed(false);
     sentRef.current = false;
-    if (!root) return;
-    resume(root).finally(() => setResumed(true));
-  }, [root, resume]);
+    if (!root || !sid) return;
+    openThread(root, sid).finally(() => setResumed(true));
+  }, [root, sid, openThread]);
 
   // A project created from the New project dialog carries a first instruction.
   // Send it once the project's history has loaded (resume clears the panel, so
@@ -295,11 +298,46 @@ export function AgentPanel({
     send(initialPrompt.text, root, model, 'auto', () => onDone?.(), initialPrompt.attachments || []);
   }, [initialPrompt, resumed, root, currentModel, defaultModel, send, onDone, onInitialPromptSent]);
 
-  // Bubble the pending confirm (and its responder) up to CodePage, so the full
-  // diff + Approve/Reject can render in the center pane, not just this column.
+  // Bubble the pending confirm (and its responder) up to CodePage for the center
+  // pane — only for the thread on screen, so a background thread pausing for
+  // approval never hijacks the editor.
   useEffect(() => {
+    if (!active) return;
     onConfirmChange?.(pendingConfirm ? { confirm: pendingConfirm, respond: respondConfirm } : null);
-  }, [pendingConfirm, respondConfirm, onConfirmChange]);
+  }, [active, pendingConfirm, respondConfirm, onConfirmChange]);
+
+  // Mirror runs into this thread live (e.g. a Telegram-started run on this same
+  // session): subscribe to the project's run bus, keep only events tagged with
+  // this thread's sid, and feed them through ingestExternal (which ignores our
+  // own run's events while busy, so no double-render).
+  useEffect(() => {
+    if (!root || !sid) return undefined;
+    const controller = new AbortController();
+    code.watchAgentEvents(
+      root,
+      (ev) => {
+        if (ev.sid && ev.sid !== sid) return;
+        ingestExternal(root, ev);
+      },
+      controller.signal,
+    );
+    return () => controller.abort();
+  }, [root, sid, ingestExternal]);
+
+  // Report run state up to the thread bar (running dot).
+  useEffect(() => {
+    onBusyChange?.(sid, busy || watching);
+  }, [sid, busy, watching, onBusyChange]);
+
+  // Flag unread when this thread grows while it is off-screen.
+  const seenLenRef = useRef(0);
+  useEffect(() => {
+    if (active) {
+      seenLenRef.current = messages.length;
+    } else if (messages.length > seenLenRef.current) {
+      onUnread?.(sid);
+    }
+  }, [active, messages.length, sid, onUnread]);
 
   const onScroll = () => {
     const el = scrollRef.current;
@@ -442,31 +480,24 @@ export function AgentPanel({
   const waiting = busy && !(last && last.role === 'assistant' && (last.content || last.reasoning));
 
   return (
-    <div className="flex w-[360px] shrink-0 flex-col border-l border-zinc-800 bg-[#101012]">
+    <div className="flex h-full w-full min-h-0 flex-col bg-[#101012]">
       <header className="flex h-12 shrink-0 items-center gap-2 border-b border-zinc-800 px-3">
         <Sparkles size={15} className="text-emerald-400" />
         <span className="text-sm font-medium text-zinc-300">Agent</span>
-        <div className="ml-auto flex items-center gap-1">
-          <SessionMenu
-            sessions={sessions}
-            sessionId={sessionId}
-            onSelect={(id) => switchSession(root, id)}
-            onDelete={(id) => removeSession(root, id)}
-            onNew={newSession}
-            disabled={busy}
-          />
-          <button
-            type="button"
-            onClick={newSession}
-            disabled={busy}
-            className="rounded-lg px-2 py-1 text-[13px] text-zinc-400 transition-colors hover:bg-zinc-800 hover:text-zinc-200 disabled:opacity-40"
-            title="New chat"
-          >
-            New
-          </button>
-        </div>
+        {isTelegram && (
+          <span className="rounded-md bg-sky-500/15 px-1.5 py-0.5 text-[10px] font-medium text-sky-300">
+            telegram
+          </span>
+        )}
+        <div className="ml-auto" />
         <SettingsButton />
       </header>
+
+      {watching && !busy && (
+        <div className="shrink-0 border-b border-zinc-800 bg-emerald-500/10 px-3 py-1.5 text-[12px] text-emerald-300">
+          ↔ Mirroring a run started from Telegram…
+        </div>
+      )}
 
       <div ref={scrollRef} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto px-3 py-4">
         {messages.length === 0 && !busy && (

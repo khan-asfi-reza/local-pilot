@@ -11,6 +11,7 @@ from typing import AsyncIterator
 import httpx
 
 from core import sessions
+from services import run_bus
 from services.harness_client import HARNESS_URL, stream_harness_turn
 
 
@@ -20,7 +21,11 @@ async def run_full_access(root: str, messages: list[dict], model: str | None = N
     event is {'type':'session','id':...}; the conversation is persisted when the
     run finishes so either tool can resume it."""
     sid = session_id or sessions.new_id()
-    yield {"type": "session", "id": sid}
+    session_event = {"type": "session", "id": sid}
+    # Tag every mirrored event with its session id so a watcher can route it to
+    # the right thread (concurrent runs on one project share the bus).
+    run_bus.publish(root, {**session_event, "sid": sid})
+    yield session_event
     assistant_parts: list[str] = []
     payload: dict = {"messages": messages, "working_directory": root, "full_access": True}
     if model:
@@ -37,6 +42,9 @@ async def run_full_access(root: str, messages: list[dict], model: str | None = N
                     event = json.loads(line)
                     if event.get("type", "text") == "text":
                         assistant_parts.append(event.get("content", ""))
+                    # Mirror every event to watchers of this project (e.g. the web
+                    # Code IDE showing a run this Telegram chat started).
+                    run_bus.publish(root, {**event, "sid": sid})
                     yield event
                     if event.get("type") in {"done", "error"}:
                         break
@@ -45,6 +53,8 @@ async def run_full_access(root: str, messages: list[dict], model: str | None = N
     except Exception as exc:
         yield {"type": "error", "message": str(exc)}
     finally:
+        # Tell watchers the run ended, even if the stream closed without a 'done'.
+        run_bus.publish(root, {"type": "done", "sid": sid})
         convo = list(messages)
         answer = "".join(assistant_parts).strip()
         if answer:

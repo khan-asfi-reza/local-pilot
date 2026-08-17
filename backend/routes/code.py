@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import html
 import io
@@ -18,7 +19,7 @@ from starlette.requests import HTTPConnection
 
 from core.database import init_db
 from core import projects, sessions
-from services import terminals
+from services import run_bus, terminals
 from services.agent_runner import run_full_access
 from services.harness_client import HARNESS_URL
 
@@ -386,6 +387,32 @@ async def code_agent(request: Request) -> StreamingResponse:
         async for event in run_full_access(resolved_root, messages, model=model, mode=mode, session_id=sid):
             etype = event.get("type", "text")
             yield f"event: {etype}\ndata: {json.dumps(event)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/agent/events")
+async def code_agent_events(request: Request, root: str) -> StreamingResponse:
+    """Watch (read-only) every agent run happening in `root`, including ones
+    started from Telegram, so the Code IDE mirrors them live. Unlike /agent this
+    starts nothing — it only relays events published to the run bus."""
+    resolved_root = os.path.realpath(root)
+
+    async def event_stream() -> AsyncIterator[str]:
+        queue = run_bus.subscribe(resolved_root)
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=20.0)
+                except asyncio.TimeoutError:
+                    yield ": keep-alive\n\n"  # comment frame keeps the connection open
+                    continue
+                etype = event.get("type", "text")
+                yield f"event: {etype}\ndata: {json.dumps(event)}\n\n"
+        finally:
+            run_bus.unsubscribe(resolved_root, queue)
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

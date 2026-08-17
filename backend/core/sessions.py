@@ -68,7 +68,8 @@ def list_sessions(root: str) -> list[dict]:
         if s.get("id"):
             title = s.get("title") or _title(s.get("messages", []))
             out.append({"id": s["id"], "title": title,
-                        "updated_at": s.get("updated_at", ""), "model": s.get("model")})
+                        "updated_at": s.get("updated_at", ""), "model": s.get("model"),
+                        "source": s.get("source", "web")})
     out.sort(key=lambda s: s.get("updated_at", ""), reverse=True)
     return out
 
@@ -100,11 +101,39 @@ def save(root: str, sid: str, messages: list[dict], model: str | None = None, mo
         "model": model or existing.get("model"),
         "mode": mode,
         "title": existing.get("title") or _title(messages),
+        "source": existing.get("source", "web"),  # preserve a thread's origin (e.g. telegram)
         "messages": messages,
         "created_at": created,
         "updated_at": _now(),
     }
     os.makedirs(_dir(root), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(session, f, indent=2)
+    os.replace(tmp, path)
+    return session
+
+
+def ensure_stub(root: str, sid: str, source: str = "web", title: str = "") -> dict:
+    """Create an empty session file if none exists, tagged with its origin, so the
+    thread shows up in the Code IDE list before its first message. A no-op if the
+    session already exists."""
+    existing = load(root, sid)
+    if existing is not None:
+        return existing
+    now = _now()
+    session = {
+        "id": sid,
+        "model": None,
+        "mode": "auto",
+        "title": title,
+        "source": source,
+        "messages": [],
+        "created_at": now,
+        "updated_at": now,
+    }
+    os.makedirs(_dir(root), exist_ok=True)
+    path = _safe_path(root, sid)
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump(session, f, indent=2)

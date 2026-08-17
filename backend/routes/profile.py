@@ -14,7 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from core import profile, projects, sessions
 from core.appdir import sandbox_for
 from core.database import init_db
-from services.agent_runner import run_full_access_collect, run_sandboxed_chat
+from services import tg_runs
+from services.agent_runner import run_sandboxed_chat
 
 LINK_HELP = (
     "You are not linked yet. Open Pilot on your computer, go to Settings → "
@@ -144,13 +145,22 @@ async def telegram_select(request: Request) -> dict:
     chat_id = int(body["chat_id"])
     pid = body.get("project_id") or None
     name, path = "", ""
+    new_sid = sessions.new_id()
     if pid:
         proj = projects.get(pid)
         if not proj:
             raise HTTPException(status_code=404, detail="project not found")
         name, path = proj["name"], proj["path"]
+        # Seed a tagged thread so it shows in the Code IDE (marked telegram) right
+        # away, and the chat's display name titles it.
+        link = profile.get_link(chat_id)
+        who = (link.display_name or link.tg_username or str(chat_id)) if link else str(chat_id)
+        try:
+            sessions.ensure_stub(path, new_sid, source="telegram", title=f"Telegram · {who}")
+        except Exception:
+            pass
     # A fresh session per selection, so switching context starts a clean thread.
-    profile.set_selected_project(chat_id, pid, sessions.new_id())
+    profile.set_selected_project(chat_id, pid, new_sid)
     return {"name": name, "path": path, "cleared": pid is None}
 
 
@@ -158,8 +168,8 @@ async def telegram_select(request: Request) -> dict:
 async def telegram_mode(request: Request) -> dict:
     body = await request.json()
     mode = body.get("mode", "auto")
-    if mode not in ("ask", "auto"):
-        raise HTTPException(status_code=400, detail="mode must be ask or auto")
+    if mode not in ("plan", "ask", "auto"):
+        raise HTTPException(status_code=400, detail="mode must be plan, ask, or auto")
     profile.set_mode(int(body["chat_id"]), mode)
     return {"ok": True, "mode": mode}
 
@@ -176,22 +186,26 @@ async def telegram_message(request: Request) -> dict:
         display_name=body.get("display_name", ""),
     )
     if not link.authorized:
-        return {"authorized": False, "reply": LINK_HELP}
+        return {"authorized": False, "reply": LINK_HELP, "status": "done", "pending": False}
     if not text:
-        return {"authorized": True, "reply": "(empty message)"}
+        return {"authorized": True, "reply": "(empty message)", "status": "done", "pending": False}
 
     proj = projects.get(link.selected_project_id) if link.selected_project_id else None
     sid = link.active_session_id or sessions.new_id()
 
     if proj:
+        # Project selected: drive the same full-access agent the web Code IDE runs,
+        # in the chat's mode. plan/auto run straight through; ask pauses on the first
+        # mutating op and returns pending=True, then the bot resumes via /telegram/confirm.
         root = proj["path"]
         prior = sessions.load(root, sid) or {}
         history = list(prior.get("messages", []))
         history.append({"role": "user", "content": text})
-        reply, sid = await run_full_access_collect(
-            root, history, model=link.model, mode=link.mode, session_id=sid
+        snap = await tg_runs.start(
+            chat_id, root, history, model=link.model, mode=link.mode, sid=sid
         )
-        profile.set_session(chat_id, sid)
+        profile.set_session(chat_id, snap.get("session_id") or sid)
+        return {"authorized": True, **snap}
     else:
         # No project selected: sandboxed chat, history kept under the global
         # sandbox dir so the conversation still carries across messages.
@@ -207,4 +221,48 @@ async def telegram_message(request: Request) -> dict:
             pass
         profile.set_session(chat_id, sid)
 
-    return {"authorized": True, "reply": reply or "(no response)"}
+    return {"authorized": True, "reply": reply or "(no response)", "status": "done", "pending": False}
+
+
+@router.get("/telegram/progress")
+def telegram_progress(chat_id: int) -> dict:
+    """Latest snapshot of a chat's in-flight project run, polled by the bot to
+    show live activity, an approval prompt, or the final reply."""
+    return tg_runs.progress(chat_id)
+
+
+@router.post("/telegram/clear")
+async def telegram_clear(request: Request) -> dict:
+    """Forget this chat's conversation: stop any in-flight run and start a fresh
+    session (a new thread). If a project is selected, the new thread is seeded as
+    a telegram-tagged one so it shows in the Code IDE."""
+    body = await request.json()
+    chat_id = int(body["chat_id"])
+    await tg_runs.cancel(chat_id)
+    link = profile.get_link(chat_id)
+    new_sid = sessions.new_id()
+    if link and link.selected_project_id:
+        proj = projects.get(link.selected_project_id)
+        if proj:
+            who = link.display_name or link.tg_username or str(chat_id)
+            try:
+                sessions.ensure_stub(proj["path"], new_sid, source="telegram", title=f"Telegram · {who}")
+            except Exception:
+                pass
+    profile.set_session(chat_id, new_sid)
+    return {"ok": True}
+
+
+@router.post("/telegram/confirm")
+async def telegram_confirm(request: Request) -> dict:
+    """Deliver an ask-mode decision (Approve / Approve all / Decline) from a button
+    tap to the paused run for this chat; the run then carries on."""
+    body = await request.json()
+    chat_id = int(body["chat_id"])
+    decision = body.get("decision", "decline")
+    if decision not in ("approve", "approve_always", "decline"):
+        raise HTTPException(status_code=400, detail="bad decision")
+    snap = await tg_runs.resume(chat_id, decision, body.get("feedback", ""))
+    if snap.get("session_id"):
+        profile.set_session(chat_id, snap["session_id"])
+    return {"authorized": True, **snap}

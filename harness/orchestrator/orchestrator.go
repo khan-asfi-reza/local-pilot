@@ -110,8 +110,11 @@ func (o *Orchestrator) Execute(ctx context.Context, prompt string, contract *Con
 		stateText += "\n\nAPI CONTRACT — the SINGLE SOURCE OF TRUTH (also in openapi.yaml). The backend MUST implement " +
 			"these endpoints EXACTLY (same method, path, request body, and response fields). The typed client " +
 			"frontend/src/lib/api.ts is ALREADY GENERATED from this contract — do NOT create a task to write or generate " +
-			"the API client; frontend tasks simply IMPORT its functions (e.g. listDoctors()) and NEVER hardcode a " +
-			"fetch('/api/...') path or invent an endpoint. Endpoints:\n" + c.renderForPrompt()
+			"the API client; frontend tasks simply IMPORT its functions and NEVER hardcode a " +
+			"fetch('/api/...') path or invent an endpoint. Each endpoint below lists the EXACT symbol api.ts exports " +
+			"under 'api.ts:' — import those names VERBATIM (function + its Result type). NEVER invent a client name or " +
+			"a Result type (no getV1UsersByUsernameResult-style guesses); if a name is not listed here it does not " +
+			"exist in api.ts. Endpoints:\n" + c.renderForPrompt()
 	}
 
 	plan, err := Decompose(ctx, o.planner, contract, Outline(sections), stateText)
@@ -198,10 +201,19 @@ func projectMap(tasks []SubTask) string {
 func authScaffoldNote(workDir string) string {
 	for _, p := range []string{"backend/app/auth.py", "app/auth.py", "backend/auth.py", "auth.py", "backend/src/auth.ts", "src/auth.ts"} {
 		if fileExists(filepath.Join(workDir, p)) {
-			return "\n\nAUTHENTICATION IS ALREADY IMPLEMENTED in " + p + " (a users table, register/login/me endpoints, " +
+			node := strings.HasSuffix(p, ".ts")
+			migDir := "backend/migrations/"
+			note := "\n\nAUTHENTICATION IS ALREADY IMPLEMENTED in " + p + " (a users table, register/login/me endpoints, " +
 				"and a token guard). Do NOT create a task for authentication, a users table, JWT, or password hashing — they " +
 				"exist. Feature tasks must IMPORT and use the provided auth (guard protected routes with it) and reference the " +
 				"existing users table for ownership (user_id)."
+			if node {
+				note += " DATABASE SCHEMA: put every migration as a numbered .sql file in " + migDir + " (e.g. 001_items.sql, " +
+					"002_orders.sql) — that is the ONLY directory the migration runner scans; SQL placed anywhere else (e.g. " +
+					"src/db/migrations) is NEVER applied and the tables will not exist. Each migration file must CREATE its own " +
+					"tables; every column and table your service code queries must exist in a migration here."
+			}
+			return note
 		}
 	}
 	return ""
@@ -384,7 +396,33 @@ func buildChildPrompt(t SubTask, sections []Section, stateText, fileMap, digest,
 		"In any manifest, list dependencies by NAME ONLY with no version number (package.json: use the \"latest\" " +
 		"tag) so the package manager installs the current stable; add a version only if the spec asks. " +
 		"Read all config (DB host/port, secrets) from the .env file / environment variables — never hardcode ports " +
-		"or credentials. Only create or modify YOUR target files — never delete or overwrite others.")
+		"or credentials. Only create or modify YOUR target files — never delete or overwrite others. " +
+		"ROUTES ARE AUTO-MOUNTED (Node/Express): the entrypoint scans backend/src/routes/ and mounts each file at " +
+		"/api/<filename>. To add an endpoint group, create backend/src/routes/<resource>.ts that `export default`s an " +
+		"Express Router using RELATIVE paths (router.get('/'), router.get('/:id'), router.post('/')) — it goes live " +
+		"automatically at /api/<resource>. Do NOT wire it anywhere and do NOT edit the entrypoint. " +
+		"DO NOT TOUCH the scaffold-owned files (they are already correct — rewriting them is the #1 cause of a broken " +
+		"app): NEVER create, overwrite, or edit backend/src/index.ts, backend/src/db.ts, backend/src/auth.ts, " +
+		"backend/src/env.ts, backend/src/migrate.ts, or frontend/vite.config.ts. Use the DB via `import { pool } from " +
+		"'../db'` and `pool.query(sql, params)` (node-postgres — params is an ARRAY, e.g. pool.query('SELECT * FROM t " +
+		"WHERE id=$1', [id])); use auth via `import { requireAuth } from '../auth'`. The frontend reaches the API by calling " +
+		"fetch('/api/...') same-origin; never hardcode a backend host/port in the app. For an app with login, send the " +
+		"stored JWT on EVERY request (Authorization: Bearer) — an authed endpoint without the header returns 401. Login " +
+		"and registration pages must be SEPARATE simple forms (login = email + password only; do not reuse a signup " +
+		"form with a required confirm-password for login) and must actually store the token and load the session. " +
+		"IMPORTS & EXPORTS (mismatches crash the browser with 'does not provide an export named X' — follow EXACTLY): " +
+		"(1) Use a NAMED export for every component, page, hook, and helper — `export function Foo() {}` or " +
+		"`export const foo = ...` — and import it the SAME way: `import { Foo } from './Foo'`. Do NOT use `export " +
+		"default` or default imports anywhere. (2) A TYPE or interface — including any `...Result` type from the API " +
+		"client — MUST be imported type-only: `import type { FooResult } from '@/lib/api'`. A plain value import of a " +
+		"type (`import { FooResult }`) compiles but breaks Vite at runtime. (3) Import a symbol ONLY if the module " +
+		"actually exports it under that exact name — never guess or invent an export. " +
+		"Your ONLY tools are read_file, write_file, edit_file, list_dir, and search — there is NO shell in this task. " +
+		"Do NOT try to run, install, migrate, test, or verify anything (no shell_run, no serve, no commands): those " +
+		"tools do not exist here and every attempt just errors and wastes a step. You do NOT need to check your work — " +
+		"after these files are written the project is installed, booted, and tested for you automatically, and any " +
+		"errors are fixed in a later repair step. So once your target files are written, STOP immediately and reply " +
+		"with a one-line summary of what you wrote; do not attempt to confirm it runs.")
 	return b.String()
 }
 

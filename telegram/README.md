@@ -35,7 +35,9 @@ python bot.py            # BACKEND_URL defaults to http://localhost:8182
 ```
 
 The bot idles until a token is set (and enabled) in **Settings → Telegram**,
-then starts polling.
+then starts polling. Changing the token (or disabling Telegram) in Settings takes
+effect within a few seconds: the bridge stops polling the old bot and rebinds to
+the new one on its own, so no restart is needed.
 
 ## Connecting a chat
 
