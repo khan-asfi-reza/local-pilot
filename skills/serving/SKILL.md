@@ -24,35 +24,35 @@ A program that uses only the standard library needs NO install; skip this step f
 
 ## 2. Start the server with the `serve` tool
 
-Give it the command and the port it listens on. Pick the row for the framework:
+FIRST get the real port. The harness provisions a `.env` with `PORT` (backend) and `VITE_PORT` (frontend dev server) — read it and use that EXACT port; do NOT guess a stack default. The `serve` tool also reports the actual bound port in its result — always curl the port it returns. A framework default applies ONLY when there is no `.env` port (e.g. a standalone client-only app). Pick the row for the framework and use the provisioned `$PORT` / `$VITE_PORT` in place of the example number:
 
 Python
-- FastAPI: `.venv/bin/uvicorn main:app --port 8000` (module path to the app, e.g. `backend.main:app`), port 8000.
-- Flask: `.venv/bin/flask --app main run --port 8000`, port 8000.
-- Django (dev): `.venv/bin/python manage.py runserver 8000`, port 8000.
-- Django (prod): `.venv/bin/gunicorn <project>.wsgi --bind 127.0.0.1:8000`, port 8000.
-- Static files (no deps): `python3 -m http.server 8000`, port 8000.
+- FastAPI: `.venv/bin/uvicorn main:app --port $PORT` (module path to the app, e.g. `backend.main:app`).
+- Flask: `.venv/bin/flask --app main run --port $PORT`.
+- Django (dev): `.venv/bin/python manage.py runserver $PORT`.
+- Django (prod): `.venv/bin/gunicorn <project>.wsgi --bind 127.0.0.1:$PORT`.
+- Static files (no deps): `python3 -m http.server $PORT`.
 
 Node / JS
-- Express or plain: `node server.js`, port from the code (often 3000).
-- npm script: `npm start` or `npm run dev`, port from the app.
-- Next.js: `npm run dev`, port 3000.
+- Express or plain: `node server.js` — it reads `PORT` from `.env`; serve on that `$PORT`.
+- npm script: `npm start` or `npm run dev`; serve on the `.env` port (`VITE_PORT` for a Vite frontend, `PORT` for a backend).
+- Next.js: `npm run dev -- -p $PORT`.
 
 PHP
-- Built-in server: `php -S localhost:8000`, port 8000.
-- Laravel: `php artisan serve --port 8000`, port 8000.
-- Symfony: `symfony server:start` or `php -S localhost:8000 -t public`, port 8000.
+- Built-in server: `php -S localhost:$PORT`.
+- Laravel: `php artisan serve --port $PORT`.
+- Symfony: `symfony server:start` or `php -S localhost:$PORT -t public`.
 
 Ruby
-- Rails: `bin/rails server -p 3000`, port 3000.
-- Rack / Sinatra: `rackup -p 9292`, port 9292.
+- Rails: `bin/rails server -p $PORT`.
+- Rack / Sinatra: `rackup -p $PORT`.
 
 JVM / .NET / others
-- Spring Boot: `mvn spring-boot:run` (or `java -jar target/app.jar`), port 8080.
-- .NET: `dotnet run`, port 5000.
-- Go: `go run .` (only if it is a server), port from the code.
-- Rust (axum/actix): `cargo run`, port from the code.
-- Elixir / Phoenix: `mix phx.server`, port 4000.
+- Spring Boot: `mvn spring-boot:run` (or `java -jar target/app.jar`) — it binds `server.port`/`PORT` from `.env`.
+- .NET: `dotnet run --urls http://localhost:$PORT`.
+- Go: `go run .` (only if it is a server) — it reads `PORT` from `.env`.
+- Rust (axum/actix): `cargo run` — it reads `PORT` from `.env`.
+- Elixir / Phoenix: `mix phx.server`.
 
 If your framework is not listed, use its documented run command with the `serve` tool the same way — the tool is language-agnostic.
 
@@ -62,8 +62,9 @@ Read the serve result. `ready:true` means the port opened. If `ready:false`, rea
 
 ## 4. Verify real behavior with curl (shell_run)
 
-- GET: `curl -s http://localhost:8000/` or a route like `curl -s http://localhost:8000/todos`.
-- POST: `curl -s -X POST http://localhost:8000/todos -H "Content-Type: application/json" -d '{"title":"x"}'`.
+Use the port the serve tool reported (`$PORT`), not a guessed one.
+- GET: `curl -s http://localhost:$PORT/` or a route like `curl -s http://localhost:$PORT/todos`.
+- POST: `curl -s -X POST http://localhost:$PORT/todos -H "Content-Type: application/json" -d '{"title":"x"}'`.
 Confirm the response matches what the task expects.
 
 ## 5. Finish
@@ -73,5 +74,5 @@ Only after a real request returned the correct response. In your final reply giv
 ## Rules
 - Never run a server, watcher, or `--reload`/`--watch` process with shell_run. Use serve.
 - Install dependencies before serving — but only if the project has a manifest; stdlib apps need none.
-- Keep the port consistent between the serve command and the curl checks.
+- Keep the port consistent between the serve command and the curl checks — use the provisioned `.env` port (the port the serve tool reports), never a guessed default.
 - The serve tool stops the server for you at the end; do not kill it yourself.

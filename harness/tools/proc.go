@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"fmt"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -62,6 +65,83 @@ func waitForPort(port int, timeout time.Duration) bool {
 			return true
 		}
 		time.Sleep(300 * time.Millisecond)
+	}
+	return false
+}
+
+// waitForServer waits until the server is reachable, preferring the port parsed
+// from its startup banner over the caller's expected port (which itself should be
+// the provisioned .env port, not a guess). Returns the resolved port and whether it
+// opened before the timeout.
+func waitForServer(logBuf *bytes.Buffer, expected int, timeout time.Duration) (int, bool) {
+	resolved := expected
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if logBuf != nil {
+			if bp := parseBoundPort(logBuf.String()); bp > 0 {
+				resolved = bp
+			}
+		}
+		if resolved > 0 {
+			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", resolved), 500*time.Millisecond)
+			if err == nil {
+				_ = conn.Close()
+				return resolved, true
+			}
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	return resolved, false
+}
+
+var boundPortRes = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)https?://[^\s/]*:(\d{2,5})`),            // Local: http://localhost:5173 | Uvicorn running on http://127.0.0.1:8000
+	regexp.MustCompile(`(?i)listening on\s+\S*?:(\d{2,5})`),         // listening on 0.0.0.0:8360
+	regexp.MustCompile(`(?i)listening on port\s+(\d{2,5})`),         // listening on port 8360
+	regexp.MustCompile(`(?i)running on port\s+(\d{2,5})`),           // server running on port 8360
+}
+
+// parseBoundPort scans server startup output for the port it actually bound.
+func parseBoundPort(logText string) int {
+	for _, re := range boundPortRes {
+		if m := re.FindStringSubmatch(logText); m != nil {
+			if n, err := strconv.Atoi(m[1]); err == nil && n > 0 {
+				return n
+			}
+		}
+	}
+	return 0
+}
+
+// readEnvPort reads KEY=<port> from workDir/.env (or ../.env for a monorepo backend)
+// and returns it, or 0 if absent/unparsable. This is the port the app actually binds.
+func readEnvPort(workDir, key string) int {
+	for _, rel := range []string{".env", filepath.Join("..", ".env")} {
+		data, err := os.ReadFile(filepath.Join(workDir, rel))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(string(data), "\n") {
+			line = strings.TrimSpace(line)
+			if strings.HasPrefix(line, key+"=") {
+				v := strings.TrimSpace(strings.TrimPrefix(line, key+"="))
+				if n, err := strconv.Atoi(v); err == nil && n > 0 {
+					return n
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// isFrontendServeCmd reports whether a serve command starts a Vite/frontend dev
+// server, so the VITE_PORT from .env applies rather than PORT.
+func isFrontendServeCmd(command string) bool {
+	c := strings.ToLower(command)
+	for _, sig := range []string{"vite", "npm run dev", "yarn dev", "pnpm dev", "next dev", "ng serve"} {
+		if strings.Contains(c, sig) {
+			return true
+		}
 	}
 	return false
 }

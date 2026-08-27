@@ -28,53 +28,11 @@ import (
 // search, never file, shell, or code-intelligence tools.
 var safeTools = []string{"code_run", "web_search"}
 
-// runMu serializes runs: the agent switches its active model per request, which
-// must not race across concurrent runs. It is a FIFO fair lock, not a plain
-// mutex, so concurrent runs from many projects are served in arrival order —
-// one at a time, no starvation (OS-scheduler-style FCFS). This is why 5 projects
-// firing prompts at once each get their turn instead of one hogging the model.
-var runMu = &fairLock{}
-
-// fairLock is a first-come-first-served lock. Waiters queue and are handed the
-// lock in the exact order they arrived, so no run can be starved by a busy peer.
-type fairLock struct {
-	mu      sync.Mutex
-	waiters []chan struct{}
-	held    bool
-}
-
-func (f *fairLock) Lock() {
-	f.mu.Lock()
-	if !f.held {
-		f.held = true
-		f.mu.Unlock()
-		return
-	}
-	ch := make(chan struct{})
-	f.waiters = append(f.waiters, ch)
-	f.mu.Unlock()
-	<-ch // wait our turn; the current holder hands off to us in FIFO order
-}
-
-func (f *fairLock) Unlock() {
-	f.mu.Lock()
-	if len(f.waiters) > 0 {
-		next := f.waiters[0]
-		f.waiters = f.waiters[1:]
-		f.mu.Unlock()
-		close(next) // hand the lock directly to the next waiter (stays held)
-		return
-	}
-	f.held = false
-	f.mu.Unlock()
-}
-
-// QueueDepth reports how many runs are waiting behind the active one (for status).
-func (f *fairLock) QueueDepth() int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return len(f.waiters)
-}
+// Run scheduling moved into the model package (model.RunSched): the round-robin
+// slot is now acquired around EACH model inference, not once per whole /run, so a
+// long build and a short chat interleave call-by-call and no project is starved.
+// Model-management ops below still take the slot (via model.RunSched) so they never
+// change the active model mid-inference.
 
 type runRequest struct {
 	Messages         []model.Message `json:"messages"`
@@ -144,9 +102,9 @@ func main() {
 		if e != nil || !info.ModTime().After(lastMod) {
 			return
 		}
-		runMu.Lock()
+		model.RunSched.Acquire("")
 		e = ag.Reload(cfgPath)
-		runMu.Unlock()
+		model.RunSched.Release()
 		if e == nil {
 			lastMod = info.ModTime()
 		}
@@ -205,9 +163,9 @@ func main() {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			runMu.Lock()
+			model.RunSched.Acquire("")
 			err := ag.RegisterInstalled(body.Model, body.Host, body.Name)
-			runMu.Unlock()
+			model.RunSched.Release()
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
@@ -224,9 +182,9 @@ func main() {
 		if !adminOK(w, r) {
 			return
 		}
-		runMu.Lock()
+		model.RunSched.Acquire("")
 		avail := ag.AvailableModels()
-		runMu.Unlock()
+		model.RunSched.Release()
 		writeJSON(w, map[string]any{"available": avail})
 	})
 
@@ -264,9 +222,9 @@ func main() {
 			flusher.Flush()
 			return
 		}
-		runMu.Lock()
+		model.RunSched.Acquire("")
 		regErr := ag.RegisterInstalled(body.Name, "", "")
-		runMu.Unlock()
+		model.RunSched.Release()
 		if regErr != nil {
 			_ = enc.Encode(map[string]any{"error": regErr.Error()})
 		} else {
@@ -292,9 +250,9 @@ func main() {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		runMu.Lock()
+		model.RunSched.Acquire("")
 		err := ag.RemoveModel(body.Name)
-		runMu.Unlock()
+		model.RunSched.Release()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -318,9 +276,9 @@ func main() {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		runMu.Lock()
+		model.RunSched.Acquire("")
 		err := ag.SetDefaultModel(body.Name)
-		runMu.Unlock()
+		model.RunSched.Release()
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -422,16 +380,17 @@ func main() {
 			Chat:         !req.FullAccess,
 			InjectSkills: req.InjectSkills,
 		}
-		// Switch to the request's model (falling back to the default) and run.
-		// Serialized so per-request model switching does not race. The request
-		// context cancels the turn when the client disconnects (pause).
-		runMu.Lock()
-		defer runMu.Unlock()
-		ag.UseSessionModel(req.Model)
+		// Scheduling is per-INFERENCE now (model.RunSched, keyed by project): we do
+		// NOT hold a slot for the whole run, so a long build interleaves call-by-call
+		// with other projects' prompts and none is starved. Carry the project key,
+		// preferred model, and log dir on the context; the router applies them under
+		// each inference's slot. Request context still cancels the turn on disconnect.
+		logDir := ""
 		if req.WorkingDirectory != "" {
-			model.SetLogDir(filepath.Join(req.WorkingDirectory, ".pilot", "logs"))
+			logDir = filepath.Join(req.WorkingDirectory, ".pilot", "logs")
 		}
-		ag.Run(r.Context(), agentReq, emit, confirm)
+		runCtx := model.WithRun(r.Context(), req.WorkingDirectory, req.Model, logDir)
+		ag.Run(runCtx, agentReq, emit, confirm)
 	})
 
 	// POST /confirm delivers an ask-mode decision to a blocked run, matched by the

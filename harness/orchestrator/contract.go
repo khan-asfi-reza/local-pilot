@@ -149,6 +149,30 @@ type APIEndpoint struct {
 // APIContract is the whole app's REST surface.
 type APIContract struct {
 	Endpoints []APIEndpoint `json:"endpoints"`
+	// Entities is the data model the API builder generates migrations, models, and
+	// CRUD routes from. Populated by buildAPI (derived from the endpoints, then
+	// refined by GenerateDataModel); persisted alongside the endpoints in apispec.json.
+	Entities []Entity `json:"entities,omitempty"`
+}
+
+// Entity is one database table / resource in the data model.
+type Entity struct {
+	Name   string        `json:"name"`  // singular, snake_case: "doctor"
+	Table  string        `json:"table"` // plural table name: "doctors"
+	Fields []EntityField `json:"fields"`
+}
+
+// EntityField is one column. Type is a logical type (string|text|int|number|bool|
+// date|datetime|id|uuid|email|json) mapped to each language by the generator. The
+// generator always adds id + created_at, so those are never listed here.
+type EntityField struct {
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Nullable bool   `json:"nullable,omitempty"`
+	Unique   bool   `json:"unique,omitempty"`
+	Default  string `json:"default,omitempty"` // literal SQL default, e.g. "false", "now()"
+	Ref      string `json:"ref,omitempty"`     // FK target "table.column" (e.g. "users.id")
+	Index    bool   `json:"index,omitempty"`
 }
 
 // contractSchema is deliberately FLAT (no nested arrays of objects): request and
@@ -572,4 +596,267 @@ func pascal(s string) string {
 		b.WriteString(strings.ToUpper(part[:1]) + part[1:])
 	}
 	return b.String()
+}
+
+// nonEntityResources are path resources that are NOT data tables the builder should
+// generate — auth/session verbs and the auth-owned users table (which the scaffold
+// already creates; foreign keys still reference it via fk=users.id).
+var nonEntityResources = map[string]bool{
+	"auth": true, "login": true, "register": true, "logout": true, "me": true,
+	"search": true, "health": true, "healthz": true, "stats": true, "status": true,
+	"upload": true, "uploads": true, "user": true, "users": true, "session": true,
+	"sessions": true, "token": true, "tokens": true,
+}
+
+// resourceOf returns the plural resource segment of an /api path (the table name),
+// e.g. "/api/doctors/{id}/availability" -> "doctors". "" if none.
+func resourceOf(path string) string {
+	segs := strings.Split(strings.Trim(path, "/"), "/")
+	for i := 1; i < len(segs); i++ { // segs[0] == "api"
+		if s := segs[i]; s != "" && !isParamSeg(s) {
+			return strings.ToLower(s)
+		}
+	}
+	return ""
+}
+
+func normalizeEntityType(t string) string {
+	t = strings.ToLower(strings.TrimSpace(t))
+	if t == "" {
+		return "string"
+	}
+	return t
+}
+
+// deriveEntitiesFromContract builds a default data model straight from the endpoints
+// (zero tokens): one entity per resource, fields unioned from request+response, with
+// foreign keys inferred from *_id fields whose stem names another table. It is the
+// fallback when the model returns no data model, and the seed GenerateDataModel refines.
+func deriveEntitiesFromContract(c APIContract) []Entity {
+	type acc struct {
+		fields map[string]EntityField
+		order  []string
+	}
+	byRes := map[string]*acc{}
+	var order []string
+	for _, e := range c.Endpoints {
+		res := resourceOf(e.Path)
+		if res == "" || nonEntityResources[res] || nonEntityResources[singularize(res)] {
+			continue
+		}
+		a := byRes[res]
+		if a == nil {
+			a = &acc{fields: map[string]EntityField{}}
+			byRes[res] = a
+			order = append(order, res)
+		}
+		merged := append(append([]APIField{}, e.Response...), e.Request...)
+		for _, f := range merged {
+			n := f.Name
+			if n == "" || n == "id" || n == "created_at" || n == "updated_at" {
+				continue
+			}
+			if _, ok := a.fields[n]; !ok {
+				a.fields[n] = EntityField{Name: n, Type: normalizeEntityType(f.Type), Nullable: true}
+				a.order = append(a.order, n)
+			}
+		}
+	}
+	tables := map[string]bool{"users": true}
+	for _, res := range order {
+		tables[res] = true
+	}
+	var out []Entity
+	for _, res := range order {
+		a := byRes[res]
+		ent := Entity{Name: singularize(res), Table: res}
+		for _, n := range a.order {
+			f := a.fields[n]
+			if strings.HasSuffix(n, "_id") {
+				stem := strings.TrimSuffix(n, "_id")
+				target := pluralize(stem)
+				if stem == "user" {
+					target = "users"
+				}
+				if tables[target] {
+					f.Ref = target + ".id"
+					f.Index = true
+					if f.Type == "" || f.Type == "string" {
+						f.Type = "int"
+					}
+				}
+			}
+			ent.Fields = append(ent.Fields, f)
+		}
+		out = append(out, ent)
+	}
+	return out
+}
+
+// parseEntityFields parses the flat "name:type:flag:flag, ..." data-model wire format
+// into []EntityField. Fields default to nullable so a generated INSERT never fails on
+// a column the caller omits; notnull/required tightens that.
+func parseEntityFields(s string) []EntityField {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return nil
+	}
+	var out []EntityField
+	for _, part := range strings.FieldsFunc(s, func(r rune) bool { return r == ',' || r == ';' || r == '\n' }) {
+		part = strings.TrimSpace(strings.Trim(part, "{}[]() "))
+		if part == "" {
+			continue
+		}
+		toks := strings.Split(part, ":")
+		name := strings.TrimSpace(toks[0])
+		if name == "" {
+			continue
+		}
+		f := EntityField{Name: strings.Fields(name)[0], Type: "string", Nullable: true}
+		if len(toks) > 1 && strings.TrimSpace(toks[1]) != "" {
+			f.Type = normalizeEntityType(toks[1])
+		}
+		for _, flag := range toks[2:] {
+			flag = strings.TrimSpace(strings.ToLower(flag))
+			switch {
+			case flag == "notnull" || flag == "required" || flag == "notnullable":
+				f.Nullable = false
+			case flag == "null" || flag == "nullable" || flag == "optional":
+				f.Nullable = true
+			case flag == "unique":
+				f.Unique = true
+			case flag == "index" || flag == "indexed":
+				f.Index = true
+			case strings.HasPrefix(flag, "default="):
+				f.Default = strings.TrimPrefix(flag, "default=")
+			case strings.HasPrefix(flag, "fk="):
+				f.Ref = strings.TrimPrefix(flag, "fk=")
+				f.Index = true
+			}
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+const dataModelSchema = `{"type":"object","properties":{"entities":{"type":"array","items":{"type":"object","properties":{` +
+	`"name":{"type":"string"},"table":{"type":"string"},"fields":{"type":"string"}` +
+	`},"required":["name","fields"]}}},"required":["entities"]}`
+
+type rawEntity struct {
+	Name   string `json:"name"`
+	Table  string `json:"table"`
+	Fields string `json:"fields"`
+}
+
+// GenerateDataModel asks the model for the data model as one flat structured call
+// (same shape as GenerateContract, which the small grammar-constrained decoder
+// handles reliably). Returns nil on failure so the caller keeps the derived model.
+func GenerateDataModel(ctx context.Context, p Planner, prd string, c APIContract) []Entity {
+	sys := "You are a database modeler. From the product spec and its API endpoints, list the database TABLES the app " +
+		"stores. For each table give: name (singular snake_case, e.g. \"doctor\"), table (plural, e.g. \"doctors\"), and " +
+		"fields as a comma-separated string. Each field is \"name:type\" plus optional colon-separated flags: notnull, " +
+		"null, unique, index, default=<value>, fk=<table.column>. type is one of " +
+		"string|text|int|number|bool|date|datetime|uuid|email|json. Example: \"title:string:notnull, done:bool:default=false, " +
+		"owner_id:int:fk=users.id:index, body:text:null\". Do NOT list id or created_at (added automatically). Do NOT list " +
+		"a users/auth table (it already exists) — reference it with fk=users.id. Cover every resource the endpoints imply. " +
+		"Output ONLY the JSON."
+	user := prd
+	if eps := c.renderForPrompt(); eps != "" {
+		user += "\n\nAPI endpoints:\n" + eps
+	}
+	var ents []Entity
+	for attempt := 0; attempt < 3; attempt++ {
+		raw, err := p.PlanJSON(ctx, sys, clip(user, 8000), json.RawMessage(dataModelSchema))
+		if err != nil {
+			continue
+		}
+		var out struct {
+			Entities []rawEntity `json:"entities"`
+		}
+		if json.Unmarshal([]byte(raw), &out) != nil || len(out.Entities) == 0 {
+			continue
+		}
+		ents = ents[:0]
+		for _, r := range out.Entities {
+			name := strings.TrimSpace(r.Name)
+			if name == "" || nonEntityResources[strings.ToLower(name)] {
+				continue
+			}
+			table := strings.TrimSpace(r.Table)
+			if table == "" {
+				table = pluralize(name)
+			}
+			fields := parseEntityFields(r.Fields)
+			if len(fields) == 0 {
+				continue
+			}
+			ents = append(ents, Entity{Name: name, Table: table, Fields: fields})
+		}
+		if len(ents) > 0 {
+			return ents
+		}
+	}
+	return nil
+}
+
+// mergeEntities layers the model-refined entities over the derived ones: refined win,
+// derived fill any table the model missed.
+func mergeEntities(derived, refined []Entity) []Entity {
+	if len(refined) == 0 {
+		return derived
+	}
+	have := map[string]bool{}
+	out := append([]Entity{}, refined...)
+	for _, e := range refined {
+		have[e.Table] = true
+		have[e.Name] = true
+	}
+	for _, e := range derived {
+		if !have[e.Table] && !have[e.Name] {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+func pluralize(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch {
+	case s == "" || strings.HasSuffix(s, "s"):
+		return s
+	case strings.HasSuffix(s, "y") && !endsVowelY(s):
+		return s[:len(s)-1] + "ies"
+	case strings.HasSuffix(s, "sh"), strings.HasSuffix(s, "ch"), strings.HasSuffix(s, "x"), strings.HasSuffix(s, "z"):
+		return s + "es"
+	default:
+		return s + "s"
+	}
+}
+
+func singularize(s string) string {
+	s = strings.ToLower(strings.TrimSpace(s))
+	switch {
+	case strings.HasSuffix(s, "ies"):
+		return s[:len(s)-3] + "y"
+	case strings.HasSuffix(s, "ses"), strings.HasSuffix(s, "ches"), strings.HasSuffix(s, "shes"), strings.HasSuffix(s, "xes"):
+		return s[:len(s)-2]
+	case strings.HasSuffix(s, "ss"):
+		return s
+	case strings.HasSuffix(s, "s"):
+		return s[:len(s)-1]
+	default:
+		return s
+	}
+}
+
+func endsVowelY(s string) bool {
+	if len(s) < 2 {
+		return false
+	}
+	switch s[len(s)-2] {
+	case 'a', 'e', 'i', 'o', 'u':
+		return true
+	}
+	return false
 }

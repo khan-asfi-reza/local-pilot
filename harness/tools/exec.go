@@ -163,6 +163,19 @@ func serveTool() *Tool {
 			port := args.Int("port", 0)
 			wait := time.Duration(args.Int("wait_seconds", 20)) * time.Second
 
+			// Resolve the port the app actually binds: prefer the provisioned .env
+			// (VITE_PORT for a frontend dev server, else PORT) over the model's guess.
+			// The banner parsed from the server's own output (below) overrides even
+			// that. Backward compatible: with no .env and no banner, we use the arg.
+			expected := port
+			envKey := "PORT"
+			if isFrontendServeCmd(command) {
+				envKey = "VITE_PORT"
+			}
+			if envPort := readEnvPort(env.WorkDir, envKey); envPort > 0 {
+				expected = envPort
+			}
+
 			cmd := newShellCmd(context.Background(), command)
 			cmd.Dir = env.WorkDir
 			cmd.Env = projectEnv()
@@ -176,18 +189,24 @@ func serveTool() *Tool {
 			}
 			env.Procs.add(&bgProc{label: command, cmd: cmd, log: &log})
 
-			ready := waitForPort(port, wait)
-			note := fmt.Sprintf("server did not open port %d in time; read logs for the error", port)
+			resolved, ready := waitForServer(&log, expected, wait)
+			url := fmt.Sprintf("http://localhost:%d", resolved)
+			note := fmt.Sprintf("server did not open port %d in time; read logs for the error", resolved)
 			if ready {
-				note = fmt.Sprintf("server is listening on port %d; verify it with a shell_run curl, then finish", port)
+				note = fmt.Sprintf("server is listening at %s — verify it with `curl -s %s/<path>`, then finish", url, url)
+				if resolved != port {
+					note += fmt.Sprintf(" (it bound port %d, not the %d you passed — use %d for every curl)", resolved, port, resolved)
+				}
 			}
 			return map[string]any{
-				"started": true,
-				"ready":   ready,
-				"pid":     cmd.Process.Pid,
-				"port":    port,
-				"logs":    truncateMiddle(log.String(), 4000),
-				"note":    note,
+				"started":        true,
+				"ready":          ready,
+				"pid":            cmd.Process.Pid,
+				"port":           resolved,
+				"requested_port": port,
+				"url":            url,
+				"logs":           truncateMiddle(log.String(), 4000),
+				"note":           note,
 			}, nil, nil
 		},
 	}

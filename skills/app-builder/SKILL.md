@@ -201,8 +201,12 @@ export default function App() {
 
 ## Never do this
 
-- NEVER edit `index.html`, `src/main.jsx`, or the config files (they are already
-  set up). Build the app in `src/App.jsx` and your own components.
+- NEVER create, rename, copy (`cp`), edit, or grep-verify the entry point
+  (`index.html`, `src/main.jsx` / `src/main.tsx`) or the config files — they are
+  already set up and correct. The HTML already points at the real entry; do not
+  "fix" it or hunt for a `main.jsx` vs `main.tsx` mismatch (there is none). Build the
+  app in `src/App.jsx` and your own components. Verify by the app's real behavior (it
+  renders / responds), NEVER by inspecting the served HTML's `<script src>`.
 - NEVER use `<script>` tags, a CDN, or Babel — this is a bundled Vite project.
 - NEVER try to build, run, serve, preview, or test the app, and never use a shell
   or terminal — no such tool exists here and none is needed.

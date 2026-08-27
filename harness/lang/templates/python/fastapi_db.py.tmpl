@@ -1,5 +1,13 @@
 import os
 
+from dotenv import load_dotenv
+
+# Load the provisioned .env (the real DB credentials) before anything reads
+# os.environ; also load the root .env one level up (monorepo backend/) with override
+# so provisioned values always win over any stray local .env.
+load_dotenv()
+load_dotenv(os.path.join("..", ".env"), override=True)
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
 

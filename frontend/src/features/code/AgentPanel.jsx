@@ -341,12 +341,17 @@ export function AgentPanel({
 
   const onScroll = () => {
     const el = scrollRef.current;
-    if (el) atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    // "At bottom" within a small threshold. Updated on every user scroll, so a
+    // scroll UP turns auto-follow off and a scroll back DOWN turns it on again.
+    if (el) atBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   };
 
+  // Follow the transcript as it grows — including streamed tokens (which change
+  // content, not message count) — but ONLY while the user is at the bottom. If they
+  // scrolled up to read, we leave their position alone.
   useEffect(() => {
     if (atBottomRef.current) endRef.current?.scrollIntoView({ behavior: 'auto' });
-  }, [messages.length, busy]);
+  }, [messages, busy]);
 
   const removeAttachment = (id) => setAttachments((prev) => prev.filter((a) => a.id !== id));
 

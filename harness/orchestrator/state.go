@@ -154,7 +154,9 @@ func (o *Orchestrator) initialize(ctx context.Context, prompt string, c *Contrac
 		"with exact root-relative paths: the entrypoint, ONE config/settings module, ONE root router/app registry, " +
 		"the package manifest, and at most one shared middleware/util if strictly needed. This is the skeleton ONLY " +
 		"— do NOT include any database connection, cache client, migrations, seeds, route handlers, models, business " +
-		"logic, services, or UI; those are FEATURE files built by later sub-tasks, not here. In manifests, list " +
+		"logic, services, or UI; those are FEATURE files built by later sub-tasks, not here. Do NOT create a .env file: " +
+		"the harness has already provisioned one with the correct ports and DB credentials, and writing your own shadows " +
+		"it. In manifests, list " +
 		"dependencies by NAME ONLY with no version number, so the package manager installs the current stable release " +
 		"(requirements.txt: just the package name; package.json: use the \"latest\" tag). Add a version only if the " +
 		"spec explicitly asks for one. Output ONLY the JSON."

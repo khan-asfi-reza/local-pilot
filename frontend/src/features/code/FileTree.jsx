@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   ChevronDown,
   ChevronRight,
@@ -9,6 +10,7 @@ import {
   FolderSearch,
   FolderUp,
   FilePlus2,
+  Home,
   RefreshCw,
 } from 'lucide-react';
 import { Button } from '../../components/ui/button';
@@ -354,6 +356,7 @@ export function FileTree({
   onDeleted,
   onRenamed,
 }) {
+  const navigate = useNavigate();
   const [expanded, setExpanded] = useState(() => new Set());
   const [menu, setMenu] = useState(null); // { x, y, node }
   const [pending, setPending] = useState(null); // { parent, type }
@@ -512,6 +515,14 @@ export function FileTree({
         <span className="mr-auto min-w-0 truncate text-sm font-medium text-zinc-300">
           {projectName || 'Files'}
         </span>
+        <button
+          type="button"
+          onClick={() => navigate('/')}
+          title="Home"
+          className="rounded-md p-1 text-zinc-500 transition-colors hover:bg-zinc-800 hover:text-zinc-200"
+        >
+          <Home size={14} />
+        </button>
         <button
           type="button"
           onClick={() => startCreate('', 'file')}

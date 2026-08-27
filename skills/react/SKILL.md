@@ -22,6 +22,6 @@ internal: true
 
 ## Make it beautiful and real (design-first, not stubs)
 Build a genuine product, not placeholder pages:
-- **Every screen in the spec is a real page** with content — a sticky top nav, a hero/landing on `/` (headline + subtext + primary CTA + a visual, NOT a bare `<Link>`), list/grid pages with cards, a detail page, forms in a modal or panel. A route whose element is just a link or one line of text is a defect.
+- **Every screen in the spec is a real page** with content — a sticky top nav, a hero/landing on `/` (headline + subtext + primary CTA + a visual, NOT a bare `<Link>`), list/grid pages with cards, a detail page, forms in a modal or panel. A route whose element is just a link or one line of text is a defect. This applies to **multi-page / router-based apps only**: a single-view app such as a canvas game, a 3D/WebGL scene, or a one-screen dashboard has no routes to police — do NOT add a router or split it into pages; build the one real view well.
 - **Modern visual polish**: generous spacing, a consistent accent color, rounded cards with soft shadows (`rounded-xl shadow-sm border`), hover states, readable type scale, responsive grid (`grid gap-6 sm:grid-cols-2 lg:grid-cols-3`), and proper loading (skeleton/spinner), empty ("No X yet"), and error states. Use `lucide-react` for icons.
 - **Wire it to real data** via the generated client (rule #4) so pages show the seeded content, and every button/form calls the client and reflects the result.

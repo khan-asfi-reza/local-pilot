@@ -2,8 +2,9 @@ import dotenv from 'dotenv';
 import path from 'path';
 
 // Loads environment variables before anything else reads process.env. The harness
-// provisions a .env at the project root; in a monorepo the backend runs from
-// backend/, so this also loads the root .env one level up. Import this FIRST in
-// every entrypoint (index.ts, migrate.ts, seed.ts).
+// provisions a .env with the real ports and DB credentials; in a monorepo the
+// backend runs from backend/, so this also loads the root .env one level up WITH
+// override so the provisioned values always win over any stray local .env. Import
+// this FIRST in every entrypoint (index.ts, migrate.ts, seed.ts).
 dotenv.config();
-dotenv.config({ path: path.resolve(process.cwd(), '../.env') });
+dotenv.config({ path: path.resolve(process.cwd(), '../.env'), override: true });

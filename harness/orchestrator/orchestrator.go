@@ -64,7 +64,17 @@ func (o *Orchestrator) Execute(ctx context.Context, prompt string, contract *Con
 	// slow scaffold/build work, so the scaffold and every feature task read DB/cache
 	// config from .env and infra never sits gated behind init. Idempotent: it
 	// no-ops when a .env already exists, so it is safe on a re-run too.
-	env := o.provision(ctx, prompt, spec.WorkDir, emit)
+	// Only stand up backend infra (docker services, REST contract, auth) for apps
+	// that actually need a server. A client-only app — a browser game, static site,
+	// or SPA with no accounts/persistence — gets NONE of it (no postgres, no
+	// server.js, no auth). This is why an Asteroids game must not scaffold a backend.
+	backend := needsBackend(prompt)
+	env := ""
+	if backend {
+		env = o.provision(ctx, prompt, spec.WorkDir, emit)
+	} else {
+		emit(events.Text("\n[frontend-only app detected — no backend, database, or auth]\n"))
+	}
 
 	var stateText string
 	if !detectInitialized(spec.WorkDir) {
@@ -89,13 +99,20 @@ func (o *Orchestrator) Execute(ctx context.Context, prompt string, contract *Con
 	if env != "" {
 		stateText += "\n\nBACKING SERVICES (provisioned via docker — read ALL db/cache config from the .env file, never hardcode ports/hosts):\n" + env
 	}
-	stateText += authScaffoldNote(spec.WorkDir)
+	var apiCovered bool // set below once the contract + API builder have run
+	if !backend {
+		stateText += "\n\nThis is a FRONTEND-ONLY, client-side app (a browser app/game/static site). Do NOT create any " +
+			"backend, server, API routes, database, migrations, ORM, or authentication — no Express/server.js, no db.js, " +
+			"no *.sql, no /api. Everything runs in the browser; if it must remember data use localStorage. For a 3D game " +
+			"use Three.js (WebGL) for graphics and the Web Audio API for sound. Ship it as a single Vite app."
+	}
 
-	// Contract-first: design the whole REST API up front and make it the single
-	// source of truth. The backend implements it exactly; the frontend calls it only
-	// through a generated typed client (written into frontend/src/lib/api.ts), so the
-	// two sides cannot drift on paths or shapes. Also written as openapi.yaml.
-	cAPI, cErr := GenerateContract(ctx, o.planner, prompt)
+	// Contract-first (backend apps only): design the whole REST API up front and make
+	// it the single source of truth. The backend implements it exactly; the frontend
+	// calls it only through a generated typed client. Skipped entirely for a
+	// frontend-only app, which has no API to contract.
+	if backend {
+		cAPI, cErr := GenerateContract(ctx, o.planner, prompt)
 	if cErr != nil || len(cAPI.Endpoints) == 0 {
 		emit(events.Text("\n[contract design skipped (" + errText(cErr) + ") — building without a generated client]\n"))
 	}
@@ -115,6 +132,19 @@ func (o *Orchestrator) Execute(ctx context.Context, prompt string, contract *Con
 			"under 'api.ts:' — import those names VERBATIM (function + its Result type). NEVER invent a client name or " +
 			"a Result type (no getV1UsersByUsernameResult-style guesses); if a name is not listed here it does not " +
 			"exist in api.ts. Endpoints:\n" + c.renderForPrompt()
+		}
+	}
+
+	// Deterministic API/DB builder: from the contract's data model, generate
+	// migrations, models, and CRUD route skeletons so feature tasks only fill the
+	// marked LOGIC blanks. Runs AFTER the contract (it derives entities from the
+	// endpoints) and returns covered=false — writing nothing and swapping no prompts —
+	// when no builder matches the backend framework, so the hand-write path is intact.
+	if backend {
+		var apiNote string
+		apiCovered, apiNote = o.buildAPI(ctx, prompt, spec.WorkDir, o.contract, emit)
+		stateText += authScaffoldNote(spec.WorkDir, apiCovered)
+		stateText += apiNote
 	}
 
 	plan, err := Decompose(ctx, o.planner, contract, Outline(sections), stateText)
@@ -198,7 +228,30 @@ func projectMap(tasks []SubTask) string {
 // authScaffoldNote tells decomposition that auth is already built (the scaffold
 // dropped in a JWT+password module), so it plans features that USE it instead of a
 // redundant auth/users task that would clobber the working module.
-func authScaffoldNote(workDir string) string {
+// needsBackend reports whether a build needs a server / persistence tier. It errs
+// toward FRONTEND-ONLY: only an explicit backend signal (accounts, saved or shared
+// data, an API, realtime, uploads, payments, a named datastore) opts in. Without
+// one — e.g. "a browser Asteroids game" — the app is client-only and gets no
+// server, database, or auth scaffolded.
+func needsBackend(prompt string) bool {
+	low := strings.ToLower(prompt)
+	for _, sig := range []string{
+		"database", "postgres", "mysql", "mongo", "sqlite", "redis", "prisma",
+		"persist", "save to", "store data", "saved data", "account", "sign up", "signup",
+		"sign in", "signin", "log in", "login", "auth", "jwt", "session", "oauth",
+		"user account", "admin panel", " api ", "api endpoint", "rest api", "graphql",
+		"backend", "crud", "leaderboard", "multiplayer", "real-time", "realtime",
+		"websocket", "socket.io", "upload", "payment", "checkout", "stripe",
+		"send email", "notification", "webhook", "scrape",
+	} {
+		if strings.Contains(low, sig) {
+			return true
+		}
+	}
+	return false
+}
+
+func authScaffoldNote(workDir string, covered bool) string {
 	for _, p := range []string{"backend/app/auth.py", "app/auth.py", "backend/auth.py", "auth.py", "backend/src/auth.ts", "src/auth.ts"} {
 		if fileExists(filepath.Join(workDir, p)) {
 			node := strings.HasSuffix(p, ".ts")
@@ -207,7 +260,10 @@ func authScaffoldNote(workDir string) string {
 				"and a token guard). Do NOT create a task for authentication, a users table, JWT, or password hashing — they " +
 				"exist. Feature tasks must IMPORT and use the provided auth (guard protected routes with it) and reference the " +
 				"existing users table for ownership (user_id)."
-			if node {
+			// When the API builder covered the data layer, the migration convention is
+			// described (with the reserved 900+ range for new entities) in the generated-
+			// layer note instead, so don't tell the model to hand-write migrations here.
+			if node && !covered {
 				note += " DATABASE SCHEMA: put every migration as a numbered .sql file in " + migDir + " (e.g. 001_items.sql, " +
 					"002_orders.sql) — that is the ONLY directory the migration runner scans; SQL placed anywhere else (e.g. " +
 					"src/db/migrations) is NEVER applied and the tables will not exist. Each migration file must CREATE its own " +
@@ -403,7 +459,9 @@ func buildChildPrompt(t SubTask, sections []Section, stateText, fileMap, digest,
 		"automatically at /api/<resource>. Do NOT wire it anywhere and do NOT edit the entrypoint. " +
 		"DO NOT TOUCH the scaffold-owned files (they are already correct — rewriting them is the #1 cause of a broken " +
 		"app): NEVER create, overwrite, or edit backend/src/index.ts, backend/src/db.ts, backend/src/auth.ts, " +
-		"backend/src/env.ts, backend/src/migrate.ts, or frontend/vite.config.ts. Use the DB via `import { pool } from " +
+		"backend/src/env.ts, backend/src/migrate.ts, frontend/vite.config.ts, or ANY .env file. The harness has ALREADY " +
+		"provisioned the .env with the correct ports and DB credentials; creating or editing a .env (or backend/.env) " +
+		"shadows it and points the app at a database that does not exist. Use the DB via `import { pool } from " +
 		"'../db'` and `pool.query(sql, params)` (node-postgres — params is an ARRAY, e.g. pool.query('SELECT * FROM t " +
 		"WHERE id=$1', [id])); use auth via `import { requireAuth } from '../auth'`. The frontend reaches the API by calling " +
 		"fetch('/api/...') same-origin; never hardcode a backend host/port in the app. For an app with login, send the " +

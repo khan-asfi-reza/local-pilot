@@ -152,7 +152,7 @@ func reassertViteProxy(workDir string, emit func(events.Event)) {
 		"import react from '@vitejs/plugin-react'\n\n" +
 		"// Scaffold-owned: proxies /api to the backend. Do not edit by hand.\n" +
 		"export default defineConfig({\n  plugins: [react()],\n  server: {\n    port: " + fe + ",\n" +
-		"    strictPort: false,\n    proxy: { '/api': { target: 'http://localhost:" + be + "', changeOrigin: true } },\n  },\n})\n"
+		"    strictPort: true,\n    proxy: { '/api': { target: 'http://localhost:" + be + "', changeOrigin: true } },\n  },\n})\n"
 	if err := os.WriteFile(feCfg, []byte(cfg), 0o644); err == nil {
 		emit(events.Text("\n[reasserted vite /api proxy -> backend :" + be + "]\n"))
 	}
@@ -186,11 +186,10 @@ func (o *Orchestrator) smokeAndRepair(ctx context.Context, workDir string, emit 
 	}
 }
 
-// frontendStaticRepair catches product-level frontend defects a build/boot check
-// misses: a stub route (a page that is just a <Link> or bare text, e.g. a homepage
-// that only says "Find a Doctor"), and dead navigation (a to=/navigate() target no
-// <Route> matches, e.g. linking /doctors/:id when the route is /doctor/:id). It
-// hands the concrete list to a repair child. Static — no browser needed.
+// frontendStaticRepair catches one product-level frontend defect a build/boot check
+// misses: a stub route (a <Route> whose element is just a <Link> or bare text, e.g.
+// a homepage that only says "Find a Doctor"). Only runs on router-based apps (see
+// frontendStaticIssues) so it never flags a routerless app. Static — no browser.
 func (o *Orchestrator) frontendStaticRepair(ctx context.Context, app nodeApp, emit func(events.Event), confirm tools.ConfirmFunc) {
 	for round := 0; round < 3; round++ {
 		issues := frontendStaticIssues(app.dir)
@@ -203,9 +202,8 @@ func (o *Orchestrator) frontendStaticRepair(ctx context.Context, app nodeApp, em
 		}
 		emit(events.Text("  [" + app.label + "] UI wiring issues — repairing (round " + itoa(round+1) + ")\n"))
 		what := "the frontend has real product defects that a build check misses:\n- " + strings.Join(issues, "\n- ") +
-			"\nFix each: a stub route must render a real page component with content and working links; a navigation " +
-			"target must match a defined <Route path>. Use the EXACT route paths the <Route> elements declare. Keep every " +
-			"page functional — no placeholder pages."
+			"\nFix each: a stub route must render a real page component with content. Keep every page functional — no " +
+			"placeholder pages."
 		o.repair(ctx, app, what, "", emit, confirm)
 	}
 }
@@ -213,7 +211,6 @@ func (o *Orchestrator) frontendStaticRepair(ctx context.Context, app nodeApp, em
 var (
 	routePathRe = regexp.MustCompile(`<Route\s[^>]*\bpath=["']([^"']+)["']`)
 	routeElemRe = regexp.MustCompile(`<Route\s[^>]*\bpath=["']([^"']+)["'][^>]*\belement=\{([^}]*(?:\{[^}]*\}[^}]*)*)\}`)
-	linkToRe    = regexp.MustCompile(`(?:\bto=|navigate\(|history\.push\(|window\.location(?:\.href)?\s*=\s*)["'` + "`" + `](/[A-Za-z0-9_\-/:${}.]*)["'` + "`" + `]`)
 	compTagRe   = regexp.MustCompile(`<([A-Z][A-Za-z0-9]+)`)
 )
 
@@ -235,10 +232,34 @@ func hasPageComponent(elem string) bool {
 	return false
 }
 
-// frontendStaticIssues scans a frontend for stub routes and dead navigation links.
+// usesReactRouter reports whether the frontend actually depends on react-router, so
+// the route/page-defect scan only runs on router-based apps. A single-canvas game,
+// a data-router config, or a Vue/Svelte app has no <Route> pages to police, and
+// running the scan on it produces false "stub route" flags on correct code.
+func usesReactRouter(dir string) bool {
+	b, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(b), "react-router")
+}
+
+// frontendStaticIssues scans a router-based frontend for stub routes: a <Route>
+// whose element renders no real page component. Gated on react-router being a
+// dependency AND at least one <Route> existing, so it never fires on a routerless
+// app. The old dead-link check was removed: it matched any to=/navigate()/
+// window.location and produced false positives on query links, external hrefs, and
+// dynamically-built paths — real broken navigation surfaces at runtime instead.
 func frontendStaticIssues(dir string) []string {
+	if !usesReactRouter(dir) {
+		return nil
+	}
 	src := concatFrontendSource(dir)
 	if src == "" {
+		return nil
+	}
+	// Only police an app that actually declares routes.
+	if !routePathRe.MatchString(src) {
 		return nil
 	}
 	var issues []string
@@ -250,11 +271,6 @@ func frontendStaticIssues(dir string) []string {
 		}
 	}
 
-	// Collect declared route paths.
-	var routes []string
-	for _, m := range routePathRe.FindAllStringSubmatch(src, -1) {
-		routes = append(routes, m[1])
-	}
 	// Stub route: element renders no real PAGE component — router primitives
 	// (Link/Navigate/Outlet/Fragment) don't count, so a route whose element is just
 	// <Link>…</Link> or bare text is a stub.
@@ -267,63 +283,13 @@ func frontendStaticIssues(dir string) []string {
 			add("route \"" + path + "\" renders no real page component (it is a stub such as a bare <Link> or text) — build a real page for it")
 		}
 	}
-	// Dead links: a navigation target that matches no declared route.
-	if len(routes) > 0 {
-		for _, m := range linkToRe.FindAllStringSubmatch(src, -1) {
-			target := m[1]
-			if strings.HasPrefix(target, "/api") || target == "/" || target == "#" {
-				continue
-			}
-			if !routeMatches(target, routes) {
-				add("navigation to \"" + target + "\" matches no <Route path> (declared routes: " + strings.Join(routes, ", ") + ")")
-			}
-		}
-	}
 	return issues
 }
 
-// routeMatches reports whether a link target matches any declared route pattern
-// (static segments must be equal; :param / {param} / * segments match anything).
-func routeMatches(target string, routes []string) bool {
-	ts := splitSegs(target)
-	for _, r := range routes {
-		rs := splitSegs(r)
-		if len(rs) == 1 && (rs[0] == "*" || rs[0] == "") {
-			return true
-		}
-		if len(ts) != len(rs) {
-			continue
-		}
-		ok := true
-		for i := range rs {
-			seg := rs[i]
-			if strings.HasPrefix(seg, ":") || strings.HasPrefix(seg, "{") || seg == "*" {
-				continue // param — matches anything
-			}
-			if seg != ts[i] {
-				ok = false
-				break
-			}
-		}
-		if ok {
-			return true
-		}
-	}
-	return false
-}
-
-func splitSegs(p string) []string {
-	var out []string
-	for _, s := range strings.Split(p, "/") {
-		if s != "" {
-			out = append(out, s)
-		}
-	}
-	return out
-}
-
-// concatFrontendSource joins the frontend's .tsx/.jsx/.vue source (routing + links
-// live there), skipping vendored dirs. Capped so a huge app stays bounded.
+// concatFrontendSource joins the frontend's component source (routing + links live
+// there), skipping vendored dirs. Only real component extensions are scanned — NOT
+// plain .ts/.js — so the JSX/route regexes never fire on logic modules or the
+// generated api.ts client. Capped so a huge app stays bounded.
 func concatFrontendSource(dir string) string {
 	var b strings.Builder
 	_ = filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
@@ -337,7 +303,7 @@ func concatFrontendSource(dir string) string {
 			return nil
 		}
 		switch filepath.Ext(p) {
-		case ".tsx", ".jsx", ".vue", ".svelte", ".ts", ".js":
+		case ".tsx", ".jsx", ".vue", ".svelte", ".astro":
 			if b.Len() > 400_000 {
 				return fs.SkipAll
 			}
@@ -937,20 +903,77 @@ func mountLines(dir string) string {
 // buildRepair builds a frontend and repairs the real breakers (duplicate export,
 // missing import, bad syntax, a broken vite config) until the build passes.
 func (o *Orchestrator) buildRepair(ctx context.Context, app nodeApp, emit func(events.Event), confirm tools.ConfirmFunc) {
+	build := frontendBuildCommand(app)
+	// Monotonic repair: keep a snapshot of the least-broken state seen so far. A
+	// repair that ADDS errors (the 9B reintroducing a syntax error while churning the
+	// same file) is rolled back, so the loop converges instead of spiraling and we
+	// never leave the app worse than a state it already reached.
+	var bestSnap string
+	bestErrs := -1
+	defer func() {
+		if bestSnap != "" {
+			_ = os.RemoveAll(bestSnap)
+		}
+	}()
 	for round := 0; round < maxEvalRounds; round++ {
-		out, err := runTool(ctx, app.dir, 240*time.Second, "npx", "vite", "build")
+		out, err := runTool(ctx, app.dir, 240*time.Second, build[0], build[1:]...)
 		if err == nil {
 			emit(events.Text("  [" + app.label + "] builds ✓\n"))
 			return
 		}
+		errs := countBuildErrors(out)
+		switch {
+		case bestErrs >= 0 && errs > bestErrs && bestSnap != "":
+			// This repair made the build worse — revert its damage and retry from the
+			// best version, so the model fixes the real error instead of piling on more.
+			restoreSrc(bestSnap, app.dir)
+			installMissingDeps(ctx, app.dir)
+			emit(events.Text("  [" + app.label + "] a repair made the build worse — reverted to the best version and retrying\n"))
+			continue
+		case bestErrs < 0 || errs < bestErrs:
+			// Fewest errors so far — capture it as the rollback floor.
+			if bestSnap != "" {
+				_ = os.RemoveAll(bestSnap)
+			}
+			bestSnap = snapshotSrc(app.dir)
+			bestErrs = errs
+		}
 		if round == maxEvalRounds-1 {
-			emit(events.Text("  [" + app.label + "] still failing to build; leaving as-is\n"))
+			if bestSnap != "" {
+				restoreSrc(bestSnap, app.dir)
+			}
+			emit(events.Text("  [" + app.label + "] still failing to build; kept the least-broken version\n"))
 			return
 		}
 		emit(events.Text("  [" + app.label + "] build failed — repairing (round " + itoa(round+1) + ")\n"))
-		o.repair(ctx, app, "the frontend does not build", tailBoot(out), emit, confirm)
+		o.repair(ctx, app, "the frontend does not build — fix ONLY the specific error(s) below; do not rewrite working files or files the error does not mention", tailBoot(out), emit, confirm)
 		installMissingDeps(ctx, app.dir)
 	}
+}
+
+// frontendBuildCommand returns the app's own build command. Every scaffold generator
+// sets the correct "build" script (vite build / next build / astro build / react-
+// scripts build), so `npm run build` is right for all of them; fall back to vite for
+// a project with no build script.
+func frontendBuildCommand(app nodeApp) []string {
+	if fileContains(filepath.Join(app.dir, "package.json"), `"build"`) {
+		return []string{"npm", "run", "build"}
+	}
+	return []string{"npx", "vite", "build"}
+}
+
+var buildErrRe = regexp.MustCompile(`(?i)(\berror\b|✘|\bfailed\b)`)
+
+// countBuildErrors is a relative measure of how broken a build is (error/failure
+// lines), used only to compare rounds for monotonic rollback — not an exact count.
+func countBuildErrors(out string) int {
+	n := 0
+	for _, ln := range strings.Split(out, "\n") {
+		if buildErrRe.MatchString(ln) {
+			n++
+		}
+	}
+	return n
 }
 
 // migrateWithRepair runs `npm run migrate` and repairs a failing .sql file until
@@ -1145,24 +1168,53 @@ func detectNodeApps(workDir string) []nodeApp {
 // if it holds no recognizable app.
 func classifyApp(dir, label string) (nodeApp, bool) {
 	has := func(f string) bool { return fileExists(filepath.Join(dir, f)) }
-	// Node (has package.json). Frontend if a bundler/entry is present.
+	// Node (has package.json). Classify frontend vs backend from package.json CONTENT
+	// (which framework it declares), not just the presence of a vite.config/index.html
+	// — otherwise a Next.js monolith (no vite.config, no root index.html) is misread as
+	// an Express backend and boot-probed on the wrong port.
 	if has("package.json") {
-		if has("vite.config.ts") || has("vite.config.js") || has("index.html") {
-			fw := "react"
-			if fileContains(filepath.Join(dir, "package.json"), "vue") {
-				fw = "vue"
-			}
-			return nodeApp{dir: dir, label: label, kind: "frontend", stack: "node", framework: fw}, true
-		}
 		pkg := filepath.Join(dir, "package.json")
-		fw := "express"
-		switch {
-		case fileContains(pkg, "@nestjs/core"):
-			fw = "nestjs"
-		case fileContains(pkg, "fastify"):
-			fw = "fastify"
+		dep := func(name string) bool { return fileContains(pkg, `"`+name+`"`) }
+		mk := func(kind, fw string) (nodeApp, bool) {
+			return nodeApp{dir: dir, label: label, kind: kind, stack: "node", framework: fw}, true
 		}
-		return nodeApp{dir: dir, label: label, kind: "backend", stack: "node", framework: fw}, true
+		// Client frameworks / build tools → frontend. Next.js is a frontend even though
+		// it can serve API routes; it must be built/run with `next`, never boot-probed.
+		switch {
+		case dep("next"):
+			return mk("frontend", "next")
+		case dep("@angular/core"):
+			return mk("frontend", "angular")
+		case dep("@sveltejs/kit"), dep("svelte"):
+			return mk("frontend", "svelte")
+		case dep("astro"):
+			return mk("frontend", "astro")
+		case dep("vue"):
+			return mk("frontend", "vue")
+		case dep("react-scripts"):
+			return mk("frontend", "cra")
+		case dep("vite"), dep("@vitejs/plugin-react"), has("vite.config.ts"), has("vite.config.js"):
+			return mk("frontend", "react")
+		}
+		// Server frameworks → backend.
+		switch {
+		case dep("@nestjs/core"):
+			return mk("backend", "nestjs")
+		case dep("fastify"):
+			return mk("backend", "fastify")
+		case dep("koa"):
+			return mk("backend", "koa")
+		case dep("@hapi/hapi"):
+			return mk("backend", "hapi")
+		case dep("express"):
+			return mk("backend", "express")
+		}
+		// A static site (index.html, no server dep) is a frontend; otherwise fall back
+		// to a Node backend (a bare package.json with a server start script).
+		if has("index.html") {
+			return mk("frontend", "static")
+		}
+		return mk("backend", "express")
 	}
 	// Python.
 	if has("manage.py") {
@@ -1228,6 +1280,12 @@ var moduleMissRe = regexp.MustCompile(`Cannot find module '([^']+)'`)
 // or half-applied edit. Module-resolution errors are ignored here — mid-build a
 // file may reference a sibling not yet written; the final boot pass catches those.
 func syntaxErrors(ctx context.Context, app *nodeApp) string {
+	// A Vite frontend's real syntax gate is `vite build` (esbuild), not tsc: a
+	// react-ts scaffold has allowJs off, so tsc both misses .jsx files and flags
+	// constructs esbuild accepts. Skip tsc here and let buildRepair be the gate.
+	if app.kind == "frontend" && (fileExists(filepath.Join(app.dir, "vite.config.ts")) || fileExists(filepath.Join(app.dir, "vite.config.js"))) {
+		return ""
+	}
 	if !fileExists(filepath.Join(app.dir, "tsconfig.json")) {
 		return ""
 	}

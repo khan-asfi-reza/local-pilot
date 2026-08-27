@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -13,6 +15,44 @@ import (
 )
 
 var digitsRe = regexp.MustCompile(`\d+`)
+
+// envPortsNote reads the harness-provisioned .env (root or backend/) and returns a
+// line telling the model the exact ports the app is bound to, so it serves and
+// curls those instead of guessing a stack default. Empty when no .env ports exist.
+func envPortsNote(workDir string) string {
+	readKey := func(rel, key string) string {
+		b, err := os.ReadFile(filepath.Join(workDir, rel))
+		if err != nil {
+			return ""
+		}
+		for _, ln := range strings.Split(string(b), "\n") {
+			ln = strings.TrimSpace(ln)
+			if strings.HasPrefix(ln, key+"=") {
+				return strings.TrimSpace(strings.TrimPrefix(ln, key+"="))
+			}
+		}
+		return ""
+	}
+	pick := func(key string) string {
+		if v := readKey(".env", key); v != "" {
+			return v
+		}
+		return readKey(filepath.Join("backend", ".env"), key)
+	}
+	port, vite := pick("PORT"), pick("VITE_PORT")
+	if port == "" && vite == "" {
+		return ""
+	}
+	msg := "IMPORTANT — this project's ports are provisioned in .env; use these EXACT ports, do not guess a stack default:"
+	if port != "" {
+		msg += " backend PORT=" + port + ";"
+	}
+	if vite != "" {
+		msg += " frontend VITE_PORT=" + vite + ";"
+	}
+	msg += " serve on that port and curl the SAME port. The serve tool also reports the real bound port — always curl the port it returns."
+	return msg
+}
 
 // canServe reports whether this run may start a long-lived server: only when the
 // `serve` tool is available (empty allowed = top-level run with all tools). An
@@ -363,6 +403,9 @@ func (a *Agent) runNative(ctx context.Context, req Request, emit func(events.Eve
 					if canServe(req.Allowed) {
 						if !serveInjected {
 							if body := a.skills.bodies["serving"]; body != "" {
+								if ports := envPortsNote(env.WorkDir); ports != "" {
+									body += "\n\n" + ports
+								}
 								conv = append(conv, model.Message{Role: "user", Content: "To run and verify a server, follow this procedure:\n" + body})
 								serveInjected = true
 							}

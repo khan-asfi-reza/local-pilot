@@ -1,5 +1,6 @@
 fastapi
 uvicorn[standard]
+python-dotenv
 {{if or .has_postgres .needs_auth}}sqlalchemy
 {{end}}{{if .has_postgres}}psycopg[binary]
 {{end}}{{if .needs_auth}}bcrypt

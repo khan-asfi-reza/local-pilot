@@ -1,6 +1,12 @@
 import os
 
+from dotenv import load_dotenv
 from flask import Flask
+
+# Load the provisioned .env (the real DB credentials) before reading os.environ;
+# also load the root .env one level up (monorepo backend/) with override so it wins.
+load_dotenv()
+load_dotenv(os.path.join("..", ".env"), override=True)
 
 app = Flask(__name__)
 {{if .has_postgres}}app.config["SQLALCHEMY_DATABASE_URI"] = os.environ["DATABASE_URL"]{{end}}

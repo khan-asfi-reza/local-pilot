@@ -36,7 +36,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: ` + vitePort + `,
-    strictPort: false,
+    strictPort: true,
     proxy: {
       '/api': { target: 'http://localhost:` + backendPort + `', changeOrigin: true },
     },
@@ -84,6 +84,17 @@ func ScaffoldFullstack(ctx context.Context, base Req, plan StackPlan) (Result, e
 	beRes, err := beH.Scaffold(ctx, Req{Framework: plan.Backend, WorkDir: beDir, Prompt: base.Prompt, Env: base.Env, Emit: emit})
 	if err != nil {
 		return Result{}, err
+	}
+
+	// Drop the provisioned .env into backend/ too. The backend process runs from
+	// backend/, so its dotenv.config() must find the real ports and DB credentials
+	// here; without it the model, seeing no .env in its working dir, invents one with
+	// wrong defaults (PORT=3001, localhost:5432) that shadows the root .env and points
+	// the app at a database that does not exist.
+	if base.Env != "" {
+		if err := os.WriteFile(filepath.Join(beDir, ".env"), []byte(base.Env), 0o644); err != nil {
+			emit(events.Text("\n[warn: could not write backend/.env: " + err.Error() + "]\n"))
+		}
 	}
 
 	if err := os.MkdirAll(feDir, 0o755); err != nil {

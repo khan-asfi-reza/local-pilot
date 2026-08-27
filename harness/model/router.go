@@ -18,6 +18,15 @@ func NewRouter(cfg *Config, client *Client) *Router {
 
 // Constrained forwards a grammar-constrained completion to the active model,
 func (r *Router) Constrained(ctx context.Context, msgs []Message, schema json.RawMessage) (string, int, error) {
+	ri := runInfoFrom(ctx)
+	RunSched.Acquire(ri.key)
+	defer RunSched.Release()
+	if ri.model != "" {
+		_ = r.cfg.SetActive(ri.model)
+	}
+	if ri.logDir != "" {
+		SetLogDir(ri.logDir)
+	}
 	name, url, err := r.cfg.Active()
 	if err != nil {
 		return "", 0, err
@@ -28,6 +37,15 @@ func (r *Router) Constrained(ctx context.Context, msgs []Message, schema json.Ra
 // Chat forwards a native tool-calling turn to the active model, streaming tokens
 // through onDelta (may be nil) and returning the assembled message.
 func (r *Router) Chat(ctx context.Context, msgs []Message, defs []ToolDef, onDelta func(kind, text string)) (Message, int, error) {
+	ri := runInfoFrom(ctx)
+	RunSched.Acquire(ri.key)
+	defer RunSched.Release()
+	if ri.model != "" {
+		_ = r.cfg.SetActive(ri.model)
+	}
+	if ri.logDir != "" {
+		SetLogDir(ri.logDir)
+	}
 	name, url, err := r.cfg.Active()
 	if err != nil {
 		return Message{}, 0, err
@@ -39,11 +57,24 @@ func (r *Router) Chat(ctx context.Context, msgs []Message, defs []ToolDef, onDel
 // one), used to route planning through a dedicated planner model. Falls back to
 // the active model if the name is unknown.
 func (r *Router) ChatWith(ctx context.Context, modelName string, msgs []Message, defs []ToolDef, onDelta func(kind, text string)) (Message, int, error) {
-	url, ok := r.cfg.URLFor(modelName)
-	if !ok {
-		return r.Chat(ctx, msgs, defs, onDelta)
+	ri := runInfoFrom(ctx)
+	RunSched.Acquire(ri.key)
+	defer RunSched.Release()
+	if ri.logDir != "" {
+		SetLogDir(ri.logDir)
 	}
-	return r.client.Chat(ctx, url, r.cfg.TagFor(modelName), msgs, defs, onDelta)
+	url, ok := r.cfg.URLFor(modelName)
+	tag := r.cfg.TagFor(modelName)
+	if !ok {
+		// Unknown planner model: fall back to the active model INLINE (never call
+		// r.Chat — it would re-acquire the slot this call already holds and deadlock).
+		name, u, err := r.cfg.Active()
+		if err != nil {
+			return Message{}, 0, err
+		}
+		url, tag = u, r.cfg.TagFor(name)
+	}
+	return r.client.Chat(ctx, url, tag, msgs, defs, onDelta)
 }
 
 // PlannerName returns the configured planner model (or the active model).
