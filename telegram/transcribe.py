@@ -22,6 +22,12 @@ def get_model() -> WhisperModel:
     return whisper_model
 
 
+def warmup() -> None:
+    """Load the model ahead of the first voice note. A cold start downloads
+    ~150 MB and takes minutes, during which the chat shows only "Transcribing..."."""
+    get_model()
+
+
 def transcribe(ogg_path: str) -> str:
     """Transcribe an OGG voice file to text.
 

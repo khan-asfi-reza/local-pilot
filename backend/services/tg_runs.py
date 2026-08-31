@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 
 import httpx
 
-from services.agent_runner import run_full_access
+from services.agent_runner import run_full_access, run_sandboxed_stream
 from services.harness_client import harness_base
 
 # One in-flight run per chat.
@@ -41,6 +41,7 @@ class TgRun:
     chat_id: int
     root: str
     sid: str = ""
+    sandboxed: bool = False
     status: str = "running"  # running | paused | done
     text: list[str] = field(default_factory=list)
     activity: list[str] = field(default_factory=list)
@@ -103,10 +104,12 @@ def _step_line(line: str) -> str:
 
 
 async def _run_task(run: TgRun, messages: list[dict], model: str | None, mode: str) -> None:
+    if run.sandboxed:
+        stream = run_sandboxed_stream(run.root, messages, model=model, session_id=run.sid or None)
+    else:
+        stream = run_full_access(run.root, messages, model=model, mode=mode, session_id=run.sid or None)
     try:
-        async for event in run_full_access(
-            run.root, messages, model=model, mode=mode, session_id=run.sid or None
-        ):
+        async for event in stream:
             etype = event.get("type")
             if etype == "session":
                 run.sid = event.get("id", run.sid)
@@ -185,10 +188,10 @@ async def _post_confirm(pending_id: str, decision: str, feedback: str = "") -> N
 
 
 async def start(chat_id: int, root: str, messages: list[dict], model: str | None,
-                mode: str, sid: str | None) -> dict:
+                mode: str, sid: str | None, sandboxed: bool = False) -> dict:
     """Launch a run for a chat in the background and return immediately."""
     await cancel(chat_id)
-    run = TgRun(chat_id=chat_id, root=root, sid=sid or "")
+    run = TgRun(chat_id=chat_id, root=root, sid=sid or "", sandboxed=sandboxed)
     run.task = asyncio.create_task(_run_task(run, messages, model, mode))
     _runs[chat_id] = run
     # Give the run a beat to emit its first events, so the first snapshot the bot

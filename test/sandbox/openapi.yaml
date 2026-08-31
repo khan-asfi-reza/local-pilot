@@ -1,0 +1,94 @@
+openapi: 3.0.0
+info:
+  title: Generated API
+  version: 1.0.0
+paths:
+  /api/v1/auth/login:
+    post:
+      summary: "Authenticate user and receive tokens"
+      responses:
+        '200':
+          description: ok
+  /api/v1/auth/logout:
+    post:
+      summary: "Logout user and blacklist refresh token"
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+  /api/v1/auth/refresh:
+    post:
+      summary: "Rotate refresh token"
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+  /api/v1/auth/signup:
+    post:
+      summary: "Register a new user account"
+      responses:
+        '200':
+          description: ok
+  /api/v1/feed:
+    get:
+      summary: "Get feed posts ordered by day/likes"
+      responses:
+        '200':
+          description: ok
+  /api/v1/me:
+    get:
+      summary: "Get current authenticated user profile"
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+    patch:
+      summary: "Update current user's bio"
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+  /api/v1/posts:
+    post:
+      summary: "Create a new post"
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+  /api/v1/posts/:id:
+    get:
+      summary: "Get a single post by ID"
+      responses:
+        '200':
+          description: ok
+    delete:
+      summary: "Soft delete a post (author only)"
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+  /api/v1/posts/:id/like:
+    post:
+      summary: "Like a post (idempotent)"
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+    delete:
+      summary: "Unlike a post (idempotent)"
+      security: [{ bearerAuth: [] }]
+      responses:
+        '200':
+          description: ok
+  /api/v1/users/:username:
+    get:
+      summary: "Get user profile and stats"
+      responses:
+        '200':
+          description: ok
+  /api/v1/users/:username/posts:
+    get:
+      summary: "Get user's chronological posts"
+      responses:
+        '200':
+          description: ok

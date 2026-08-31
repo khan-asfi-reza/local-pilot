@@ -86,6 +86,7 @@ def load_bot():
     if "transcribe" not in sys.modules:
         stub = types.ModuleType("transcribe")
         stub.transcribe = lambda path: "transcribed text"
+        stub.warmup = lambda: None
         sys.modules["transcribe"] = stub
 
     repo_root = str(BOT_PATH.parents[1])

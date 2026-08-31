@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"harness/harness/events"
+	"harness/harness/ports"
 )
 
 // svcConf is a known backing service the harness can dockerize.
@@ -289,10 +290,11 @@ func portFree(p int) bool {
 	return true
 }
 
-// freePort returns the first bindable port at or after start.
+// freePort returns the first bindable port at or after start that Local Pilot
+// does not run on itself.
 func freePort(start int) int {
 	for p := start; p < start+500; p++ {
-		if portFree(p) {
+		if !ports.IsReserved(p) && portFree(p) {
 			return p
 		}
 	}

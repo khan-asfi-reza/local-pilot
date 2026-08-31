@@ -4,9 +4,11 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"harness/harness/events"
+	"harness/harness/ports"
 )
 
 // backendPortFor returns the dev port the evaluator boots each backend stack on, so
@@ -117,7 +119,9 @@ func ScaffoldFullstack(ctx context.Context, base Req, plan StackPlan) (Result, e
 		}
 		vitePort := envValue(base.Env, "VITE_PORT")
 		if vitePort == "" {
-			vitePort = "5173"
+			// Not 5173: that is the Local Pilot UI, and pinning the generated app
+			// there makes the app and the UI fight over one port.
+			vitePort = strconv.Itoa(ports.Free(5200))
 		}
 		if err := os.WriteFile(filepath.Join(feDir, "vite.config.ts"), []byte(viteProxyConfig(bePort, vitePort)), 0o644); err != nil {
 			emit(events.Text("\n[warn: could not write vite proxy config: " + err.Error() + "]\n"))

@@ -1,0 +1,471 @@
+{
+  "endpoints": [
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/signup",
+      "summary": "Register a new user account",
+      "auth": false,
+      "request": [
+        {
+          "name": "username",
+          "type": "string"
+        },
+        {
+          "name": "email",
+          "type": "string"
+        },
+        {
+          "name": "password",
+          "type": "string"
+        }
+      ],
+      "response": [
+        {
+          "name": "id",
+          "type": "int"
+        },
+        {
+          "name": "username",
+          "type": "string"
+        },
+        {
+          "name": "email",
+          "type": "string"
+        },
+        {
+          "name": "bio",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "date"
+        },
+        {
+          "name": "tokens",
+          "type": "string"
+        }
+      ],
+      "response_list": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/login",
+      "summary": "Authenticate user and receive tokens",
+      "auth": false,
+      "request": [
+        {
+          "name": "username",
+          "type": "string"
+        },
+        {
+          "name": "password",
+          "type": "string"
+        }
+      ],
+      "response": [
+        {
+          "name": "id",
+          "type": "int"
+        },
+        {
+          "name": "username",
+          "type": "string"
+        },
+        {
+          "name": "email",
+          "type": "string"
+        },
+        {
+          "name": "bio",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "date"
+        },
+        {
+          "name": "tokens",
+          "type": "string"
+        }
+      ],
+      "response_list": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/refresh",
+      "summary": "Rotate refresh token",
+      "auth": true,
+      "request": null,
+      "response": [
+        {
+          "name": "tokens",
+          "type": "string"
+        }
+      ],
+      "response_list": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/auth/logout",
+      "summary": "Logout user and blacklist refresh token",
+      "auth": true,
+      "request": null,
+      "response": null,
+      "response_list": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/me",
+      "summary": "Get current authenticated user profile",
+      "auth": true,
+      "request": null,
+      "response": [
+        {
+          "name": "id",
+          "type": "int"
+        },
+        {
+          "name": "username",
+          "type": "string"
+        },
+        {
+          "name": "email",
+          "type": "string"
+        },
+        {
+          "name": "bio",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "date"
+        },
+        {
+          "name": "post_count",
+          "type": "int"
+        },
+        {
+          "name": "total_likes_received",
+          "type": "int"
+        }
+      ],
+      "response_list": false
+    },
+    {
+      "method": "PATCH",
+      "path": "/api/v1/me",
+      "summary": "Update current user's bio",
+      "auth": true,
+      "request": [
+        {
+          "name": "bio",
+          "type": "string"
+        }
+      ],
+      "response": [
+        {
+          "name": "id",
+          "type": "int"
+        },
+        {
+          "name": "username",
+          "type": "string"
+        },
+        {
+          "name": "email",
+          "type": "string"
+        },
+        {
+          "name": "bio",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "date"
+        },
+        {
+          "name": "post_count",
+          "type": "int"
+        },
+        {
+          "name": "total_likes_received",
+          "type": "int"
+        }
+      ],
+      "response_list": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/feed",
+      "summary": "Get feed posts ordered by day/likes",
+      "auth": false,
+      "request": null,
+      "response": [
+        {
+          "name": "id",
+          "type": "int"
+        },
+        {
+          "name": "author_id",
+          "type": "int"
+        },
+        {
+          "name": "body",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "date"
+        },
+        {
+          "name": "post_date",
+          "type": "date"
+        },
+        {
+          "name": "like_count",
+          "type": "int"
+        },
+        {
+          "name": "is_deleted",
+          "type": "bool"
+        },
+        {
+          "name": "author_username",
+          "type": "string"
+        }
+      ],
+      "response_list": true
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/posts",
+      "summary": "Create a new post",
+      "auth": true,
+      "request": [
+        {
+          "name": "body",
+          "type": "string"
+        }
+      ],
+      "response": [
+        {
+          "name": "id",
+          "type": "int"
+        },
+        {
+          "name": "author_id",
+          "type": "int"
+        },
+        {
+          "name": "body",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "date"
+        },
+        {
+          "name": "post_date",
+          "type": "date"
+        },
+        {
+          "name": "like_count",
+          "type": "int"
+        },
+        {
+          "name": "is_deleted",
+          "type": "bool"
+        },
+        {
+          "name": "author_username",
+          "type": "string"
+        }
+      ],
+      "response_list": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/posts/:id",
+      "summary": "Get a single post by ID",
+      "auth": false,
+      "request": null,
+      "response": [
+        {
+          "name": "id",
+          "type": "int"
+        },
+        {
+          "name": "author_id",
+          "type": "int"
+        },
+        {
+          "name": "body",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "date"
+        },
+        {
+          "name": "post_date",
+          "type": "date"
+        },
+        {
+          "name": "like_count",
+          "type": "int"
+        },
+        {
+          "name": "is_deleted",
+          "type": "bool"
+        },
+        {
+          "name": "author_username",
+          "type": "string"
+        }
+      ],
+      "response_list": false
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/posts/:id",
+      "summary": "Soft delete a post (author only)",
+      "auth": true,
+      "request": null,
+      "response": [
+        {
+          "name": "id",
+          "type": "int"
+        },
+        {
+          "name": "body",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "date"
+        },
+        {
+          "name": "is_deleted",
+          "type": "bool"
+        }
+      ],
+      "response_list": false
+    },
+    {
+      "method": "POST",
+      "path": "/api/v1/posts/:id/like",
+      "summary": "Like a post (idempotent)",
+      "auth": true,
+      "request": null,
+      "response": [
+        {
+          "name": "post_id",
+          "type": "int"
+        },
+        {
+          "name": "like_count",
+          "type": "int"
+        }
+      ],
+      "response_list": false
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/v1/posts/:id/like",
+      "summary": "Unlike a post (idempotent)",
+      "auth": true,
+      "request": null,
+      "response": [
+        {
+          "name": "post_id",
+          "type": "int"
+        },
+        {
+          "name": "like_count",
+          "type": "int"
+        }
+      ],
+      "response_list": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/users/:username",
+      "summary": "Get user profile and stats",
+      "auth": false,
+      "request": null,
+      "response": [
+        {
+          "name": "id",
+          "type": "int"
+        },
+        {
+          "name": "username",
+          "type": "string"
+        },
+        {
+          "name": "email",
+          "type": "string"
+        },
+        {
+          "name": "bio",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "date"
+        },
+        {
+          "name": "post_count",
+          "type": "int"
+        },
+        {
+          "name": "total_likes_received",
+          "type": "int"
+        }
+      ],
+      "response_list": false
+    },
+    {
+      "method": "GET",
+      "path": "/api/v1/users/:username/posts",
+      "summary": "Get user's chronological posts",
+      "auth": false,
+      "request": null,
+      "response": [
+        {
+          "name": "id",
+          "type": "int"
+        },
+        {
+          "name": "author_id",
+          "type": "int"
+        },
+        {
+          "name": "body",
+          "type": "string"
+        },
+        {
+          "name": "created_at",
+          "type": "date"
+        },
+        {
+          "name": "post_date",
+          "type": "date"
+        },
+        {
+          "name": "like_count",
+          "type": "int"
+        },
+        {
+          "name": "is_deleted",
+          "type": "bool"
+        },
+        {
+          "name": "author_username",
+          "type": "string"
+        }
+      ],
+      "response_list": true
+    }
+  ]
+}

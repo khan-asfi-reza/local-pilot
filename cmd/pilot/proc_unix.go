@@ -21,3 +21,12 @@ func killProcess(cmd *exec.Cmd) {
 	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	_ = cmd.Process.Kill()
 }
+
+// killPID kills a process group by pid, for a process this run did not start.
+func killPID(pid int) {
+	if pid <= 0 {
+		return
+	}
+	_ = syscall.Kill(-pid, syscall.SIGKILL)
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+}

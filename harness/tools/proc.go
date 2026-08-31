@@ -73,16 +73,23 @@ func waitForPort(port int, timeout time.Duration) bool {
 // from its startup banner over the caller's expected port (which itself should be
 // the provisioned .env port, not a guess). Returns the resolved port and whether it
 // opened before the timeout.
-func waitForServer(logBuf *bytes.Buffer, expected int, timeout time.Duration) (int, bool) {
+//
+// busyBefore says another process was already listening on `expected` when the
+// server was started. A dial then proves nothing - it is the other process
+// answering - so the expected port is only accepted once the server's own banner
+// names it. Without this, starting a Vite app on a port the Local Pilot UI already
+// holds reports "ready" instantly and every later curl reads the UI, not the app.
+func waitForServer(logBuf *bytes.Buffer, expected int, timeout time.Duration, busyBefore bool) (int, bool) {
 	resolved := expected
+	announced := false
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		if logBuf != nil {
 			if bp := parseBoundPort(logBuf.String()); bp > 0 {
-				resolved = bp
+				resolved, announced = bp, true
 			}
 		}
-		if resolved > 0 {
+		if resolved > 0 && !(busyBefore && resolved == expected && !announced) {
 			conn, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", resolved), 500*time.Millisecond)
 			if err == nil {
 				_ = conn.Close()

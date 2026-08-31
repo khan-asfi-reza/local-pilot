@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io/fs"
 	"net/http"
@@ -11,11 +12,13 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"harness/harness/events"
+	"harness/harness/ports"
 	"harness/harness/tools"
 )
 
@@ -146,7 +149,8 @@ func reassertViteProxy(workDir string, emit func(events.Event)) {
 	}
 	fe := envVal("VITE_PORT")
 	if fe == "" {
-		fe = "5173"
+		// Never 5173: that is the Local Pilot UI the user is watching.
+		fe = strconv.Itoa(ports.Free(5200))
 	}
 	cfg := "import { defineConfig } from 'vite'\n" +
 		"import react from '@vitejs/plugin-react'\n\n" +
@@ -156,6 +160,87 @@ func reassertViteProxy(workDir string, emit func(events.Event)) {
 	if err := os.WriteFile(feCfg, []byte(cfg), 0o644); err == nil {
 		emit(events.Text("\n[reasserted vite /api proxy -> backend :" + be + "]\n"))
 	}
+}
+
+// pinVitePort gives a Vite frontend a port of its own and records it in .env.
+//
+// A standalone Vite app has no port in its config, so it takes Vite's default
+// 5173 - which is the Local Pilot UI. The app and the UI then fight over one
+// port, and the agent, seeing "port in use", kills the UI to free it. Pinning the
+// port in the dev script (and in .env, where the serve tool reads it) removes the
+// collision instead of leaving the model to resolve it.
+func pinVitePort(app nodeApp, emit func(events.Event)) {
+	if app.kind != "frontend" {
+		return
+	}
+	if !fileExists(filepath.Join(app.dir, "vite.config.ts")) && !fileExists(filepath.Join(app.dir, "vite.config.js")) {
+		return
+	}
+	pkgPath := filepath.Join(app.dir, "package.json")
+	raw, err := os.ReadFile(pkgPath)
+	if err != nil {
+		return
+	}
+	var pkg map[string]any
+	if json.Unmarshal(raw, &pkg) != nil {
+		return
+	}
+	scripts, _ := pkg["scripts"].(map[string]any)
+	if scripts == nil {
+		return
+	}
+	dev, _ := scripts["dev"].(string)
+	if !strings.Contains(dev, "vite") || strings.Contains(dev, "--port") {
+		return
+	}
+	port := existingVitePort(app.dir)
+	if port == 0 {
+		port = ports.Free(5200)
+	}
+	scripts["dev"] = dev + fmt.Sprintf(" --port %d --strictPort", port)
+	out, err := json.MarshalIndent(pkg, "", "  ")
+	if err != nil {
+		return
+	}
+	if os.WriteFile(pkgPath, append(out, '\n'), 0o644) != nil {
+		return
+	}
+	writeEnvPort(app.dir, port)
+	emit(events.Text(fmt.Sprintf("\n[pinned frontend dev server to :%d (5173 is the Local Pilot UI)]\n", port)))
+}
+
+// existingVitePort returns the VITE_PORT already provisioned for this app, or 0.
+func existingVitePort(dir string) int {
+	for _, rel := range []string{".env", filepath.Join("..", ".env")} {
+		data, err := os.ReadFile(filepath.Join(dir, rel))
+		if err != nil {
+			continue
+		}
+		for _, ln := range strings.Split(string(data), "\n") {
+			ln = strings.TrimSpace(ln)
+			if v, ok := strings.CutPrefix(ln, "VITE_PORT="); ok {
+				if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n > 0 {
+					return n
+				}
+			}
+		}
+	}
+	return 0
+}
+
+// writeEnvPort records VITE_PORT in the app's .env so the serve tool and every
+// later curl agree on the port the frontend actually binds.
+func writeEnvPort(dir string, port int) {
+	path := filepath.Join(dir, ".env")
+	blob, _ := os.ReadFile(path)
+	if strings.Contains(string(blob), "VITE_PORT=") {
+		return
+	}
+	body := string(blob)
+	if body != "" && !strings.HasSuffix(body, "\n") {
+		body += "\n"
+	}
+	_ = os.WriteFile(path, []byte(body+fmt.Sprintf("VITE_PORT=%d\n", port)), 0o644)
 }
 
 // smokeAndRepair is the final, robust "make it actually run" pass.
@@ -175,6 +260,7 @@ func (o *Orchestrator) smokeAndRepair(ctx context.Context, workDir string, emit 
 		if note := installDepsFor(ctx, app); note != "" {
 			emit(events.Text("  [" + app.label + " · " + app.stack + "] " + note + "\n"))
 		}
+		pinVitePort(app, emit)
 		if app.kind == "backend" {
 			o.migrateWithRepair(ctx, app, emit, confirm)
 			o.seedWithRepair(ctx, app, emit, confirm)
@@ -182,6 +268,43 @@ func (o *Orchestrator) smokeAndRepair(ctx context.Context, workDir string, emit 
 		} else {
 			o.frontendStaticRepair(ctx, app, emit, confirm)
 			o.buildRepair(ctx, app, emit, confirm)
+			o.frontendRenderRepair(ctx, app, emit, confirm)
+		}
+	}
+}
+
+// frontendRenderRepair is the gate a build cannot be: it opens the built app in a
+// headless browser and repairs whatever a user would actually see - a white
+// screen, a page with no content, an uncaught error during render. Skipped, never
+// failed, on a machine with no Chrome-family browser installed.
+func (o *Orchestrator) frontendRenderRepair(ctx context.Context, app nodeApp, emit func(events.Event), confirm tools.ConfirmFunc) {
+	if browserBinary() == "" {
+		emit(events.Text("  [" + app.label + "] no browser installed — skipping the render check\n"))
+		return
+	}
+	for round := 0; round < 3; round++ {
+		issues := renderIssues(ctx, app)
+		if len(issues) == 0 {
+			emit(events.Text("  [" + app.label + "] renders in a browser ✓\n"))
+			return
+		}
+		if round == 2 {
+			emit(events.Text("  [" + app.label + "] the page still does not render: " + issues[0] + "\n"))
+			return
+		}
+		emit(events.Text("  [" + app.label + "] the page does not render — repairing (round " + itoa(round+1) + ")\n"))
+		what := "the frontend BUILDS but does not render in a browser:\n- " + strings.Join(issues, "\n- ") +
+			"\nThis is a runtime fault, not a type error. The usual causes: a component that uses a context " +
+			"(a router <Link>/hook, a store, a theme) is rendered outside the provider that supplies it; a null " +
+			"or undefined value dereferenced during the first render; a bad import at module scope. Fix the cause, " +
+			"do not wrap the app in a try/catch or an error boundary to hide it."
+		o.repair(ctx, app, what, "", emit, confirm)
+		installMissingDeps(ctx, app.dir)
+		// Rebuild so the next render check sees the repair.
+		build := frontendBuildCommand(app)
+		if _, err := runTool(ctx, app.dir, 240*time.Second, build[0], build[1:]...); err != nil {
+			emit(events.Text("  [" + app.label + "] the render repair broke the build — stopping here\n"))
+			return
 		}
 	}
 }
@@ -251,17 +374,6 @@ func usesReactRouter(dir string) bool {
 // window.location and produced false positives on query links, external hrefs, and
 // dynamically-built paths — real broken navigation surfaces at runtime instead.
 func frontendStaticIssues(dir string) []string {
-	if !usesReactRouter(dir) {
-		return nil
-	}
-	src := concatFrontendSource(dir)
-	if src == "" {
-		return nil
-	}
-	// Only police an app that actually declares routes.
-	if !routePathRe.MatchString(src) {
-		return nil
-	}
 	var issues []string
 	seen := map[string]bool{}
 	add := func(s string) {
@@ -269,6 +381,28 @@ func frontendStaticIssues(dir string) []string {
 			seen[s] = true
 			issues = append(issues, s)
 		}
+	}
+
+	// Two defects that compile and build cleanly but break the running page:
+	// a router component rendered outside its provider (blank page), and an
+	// asset path with no file behind it (broken images).
+	for _, issue := range routerOutsideProviderIssues(dir) {
+		add(issue)
+	}
+	for _, issue := range missingPublicAssets(dir) {
+		add(issue)
+	}
+
+	if !usesReactRouter(dir) {
+		return issues
+	}
+	src := concatFrontendSource(dir)
+	if src == "" {
+		return issues
+	}
+	// Only police an app that actually declares routes.
+	if !routePathRe.MatchString(src) {
+		return issues
 	}
 
 	// Stub route: element renders no real PAGE component — router primitives

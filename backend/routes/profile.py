@@ -6,6 +6,7 @@ thin bridge that fetches its token, redeems link codes, and relays messages to
 the full-access agent). All the state lives in core.profile; the actual agent
 runs are in services.agent_runner."""
 
+import asyncio
 import os
 
 import httpx
@@ -15,7 +16,6 @@ from core import profile, projects, sessions
 from core.appdir import sandbox_for
 from core.database import init_db
 from services import tg_runs
-from services.agent_runner import run_sandboxed_chat
 
 LINK_HELP = (
     "You are not linked yet. Open Pilot on your computer, go to Settings → "
@@ -193,35 +193,23 @@ async def telegram_message(request: Request) -> dict:
     proj = projects.get(link.selected_project_id) if link.selected_project_id else None
     sid = link.active_session_id or sessions.new_id()
 
-    if proj:
-        # Project selected: drive the same full-access agent the web Code IDE runs,
-        # in the chat's mode. plan/auto run straight through; ask pauses on the first
-        # mutating op and returns pending=True, then the bot resumes via /telegram/confirm.
-        root = proj["path"]
-        prior = sessions.load(root, sid) or {}
-        history = list(prior.get("messages", []))
-        history.append({"role": "user", "content": text})
-        snap = await tg_runs.start(
-            chat_id, root, history, model=link.model, mode=link.mode, sid=sid
-        )
-        profile.set_session(chat_id, snap.get("session_id") or sid)
-        return {"authorized": True, **snap}
-    else:
-        # No project selected: sandboxed chat, history kept under the global
-        # sandbox dir so the conversation still carries across messages.
-        root = sandbox_for(f"tg-{chat_id}")
-        prior = sessions.load(root, sid) or {}
-        history = list(prior.get("messages", []))
-        history.append({"role": "user", "content": text})
-        reply = await run_sandboxed_chat(history, model=link.model)
-        history.append({"role": "assistant", "content": reply})
-        try:
-            sessions.save(root, sid, history, model=link.model, mode="auto")
-        except Exception:
-            pass
-        profile.set_session(chat_id, sid)
-
-    return {"authorized": True, "reply": reply or "(no response)", "status": "done", "pending": False}
+    # With a project: the same full-access agent the web Code IDE runs, in the
+    # chat's mode (plan/auto run straight through; ask pauses on the first
+    # mutating op and returns pending=True, resumed via /telegram/confirm).
+    # Without one: a sandboxed, safe-tools chat whose history lives under the
+    # global sandbox dir so the conversation carries across messages.
+    # Both go through tg_runs, so a slow model streams progress to the bot
+    # instead of holding this request open until the bot's timeout fires.
+    root = proj["path"] if proj else sandbox_for(f"tg-{chat_id}")
+    prior = await asyncio.to_thread(sessions.load, root, sid) or {}
+    history = list(prior.get("messages", []))
+    history.append({"role": "user", "content": text})
+    snap = await tg_runs.start(
+        chat_id, root, history, model=link.model, mode=link.mode, sid=sid,
+        sandboxed=proj is None,
+    )
+    profile.set_session(chat_id, snap.get("session_id") or sid)
+    return {"authorized": True, **snap}
 
 
 @router.get("/telegram/progress")

@@ -66,6 +66,38 @@ async def run_full_access(root: str, messages: list[dict], model: str | None = N
                 pass
 
 
+async def run_sandboxed_stream(root: str, messages: list[dict], model: str | None = None,
+                               session_id: str | None = None) -> AsyncIterator[dict]:
+    """Yield harness events for a no-project (safe-tools) run, in the same shape
+    run_full_access yields. Telegram's chat mode drives this through the same
+    background-run machinery as a project run, so a slow model shows progress
+    instead of holding an HTTP request open until it times out."""
+    sid = session_id or sessions.new_id()
+    yield {"type": "session", "id": sid}
+    assistant_parts: list[str] = []
+    try:
+        async for event in stream_harness_turn(messages, working_directory="", model=model):
+            if event.get("type", "text") == "text":
+                assistant_parts.append(event.get("content", ""))
+            yield event
+            if event.get("type") in {"done", "error"}:
+                break
+    except asyncio.CancelledError:
+        return
+    except Exception as exc:
+        yield {"type": "error", "message": str(exc)}
+    finally:
+        convo = list(messages)
+        answer = "".join(assistant_parts).strip()
+        if answer:
+            convo.append({"role": "assistant", "content": answer})
+        if convo:
+            try:
+                sessions.save(root, sid, convo, model=model, mode="auto")
+            except Exception:
+                pass
+
+
 async def run_full_access_collect(root: str, messages: list[dict], model: str | None = None,
                                   mode: str = "auto", session_id: str | None = None) -> tuple[str, str]:
     """Run a full-access turn and return (reply_text, session_id). Single-shot

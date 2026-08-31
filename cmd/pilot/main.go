@@ -21,6 +21,7 @@ import (
 	"harness/eval/runner"
 	"harness/harness/appdir"
 	"harness/harness/model"
+	"harness/harness/ports"
 	"harness/terminal"
 )
 
@@ -173,6 +174,7 @@ const (
 	harnessPort  = 9000
 	backendPort  = 8182
 	frontendPort = 5173
+	ollamaPort   = 11434
 )
 
 // web starts the full browser stack — harness-server, the FastAPI backend, and
@@ -199,6 +201,11 @@ func web() error {
 	for _, p := range []int{harnessPort, backendPort, frontendPort} {
 		freePort(p)
 	}
+	// The Telegram bridge listens on no port, so freePort cannot reach it. A
+	// survivor of an earlier run keeps long-polling the same bot token, and
+	// Telegram then splits updates between the two bridges - messages appear to
+	// vanish. Kill the one this machine last started.
+	killStaleBridge()
 
 	frontendURL := fmt.Sprintf("http://localhost:%d", frontendPort)
 	backendURL := fmt.Sprintf("http://localhost:%d", backendPort)
@@ -219,6 +226,10 @@ func web() error {
 	} else {
 		hs = command(root, "go", "run", "./harness/server", "-port", strconv.Itoa(harnessPort), "-config", cfgPath)
 	}
+	// Tell the agent which ports are this stack's own, so a generated app never
+	// binds one and no build command kills one.
+	hs.Env = append(os.Environ(), fmt.Sprintf("%s=%d,%d,%d,%d",
+		ports.EnvKey, frontendPort, backendPort, harnessPort, ollamaPort))
 	// Bind 0.0.0.0 so other machines on the LAN can reach the backend and UI.
 	be := command(backendDir, pythonBin(backendDir), "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", strconv.Itoa(backendPort))
 	// The backend resolves its SQLite DB from the global data dir (see
@@ -250,6 +261,10 @@ func web() error {
 			return fmt.Errorf("start %s: %w", filepath.Base(c.Path), e)
 		}
 		procs = append(procs, c)
+	}
+	if tg != nil && tg.Process != nil {
+		recordBridgePID(tg.Process.Pid)
+		defer os.Remove(bridgePIDPath())
 	}
 
 	waitPort(harnessPort)
@@ -365,6 +380,27 @@ func freePort(port int) {
 }
 
 // waitPort polls a local TCP port until it accepts connections (up to ~30s).
+func bridgePIDPath() string {
+	return filepath.Join(appdir.Dir(), "telegram-bridge.pid")
+}
+
+// recordBridgePID notes the bridge's pid so the next launch can kill it.
+func recordBridgePID(pid int) {
+	_ = os.WriteFile(bridgePIDPath(), []byte(strconv.Itoa(pid)), 0o644)
+}
+
+// killStaleBridge kills the Telegram bridge left behind by an earlier launch.
+func killStaleBridge() {
+	data, err := os.ReadFile(bridgePIDPath())
+	if err != nil {
+		return
+	}
+	if pid, e := strconv.Atoi(strings.TrimSpace(string(data))); e == nil && pid != os.Getpid() {
+		killPID(pid)
+	}
+	_ = os.Remove(bridgePIDPath())
+}
+
 func waitPort(port int) bool {
 	addr := fmt.Sprintf("localhost:%d", port)
 	for range 60 {

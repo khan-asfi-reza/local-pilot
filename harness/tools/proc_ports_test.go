@@ -1,9 +1,13 @@
 package tools
 
 import (
+	"bytes"
+	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
+	"time"
 )
 
 func TestParseBoundPort(t *testing.T) {
@@ -59,5 +63,42 @@ func TestIsFrontendServeCmd(t *testing.T) {
 		if isFrontendServeCmd(c) {
 			t.Errorf("isFrontendServeCmd(%q) = true, want false", c)
 		}
+	}
+}
+
+// A pre-existing listener on the expected port must not be reported as "our
+// server is up": that is how a generated Vite app on 5173 got mistaken for the
+// Local Pilot UI answering on the same port.
+func TestWaitForServerIgnoresAPreExistingListener(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	busy := ln.Addr().(*net.TCPAddr).Port
+
+	var log bytes.Buffer
+	if _, ready := waitForServer(&log, busy, 700*time.Millisecond, true); ready {
+		t.Error("waitForServer reported ready for a port another process already held")
+	}
+
+	// Once the server names its own port in its banner, that port is trusted.
+	log.WriteString("  ➜  Local:   http://localhost:" + strconv.Itoa(busy) + "/\n")
+	if got, ready := waitForServer(&log, busy, 700*time.Millisecond, true); !ready || got != busy {
+		t.Errorf("waitForServer after a banner = (%d, %v), want (%d, true)", got, ready, busy)
+	}
+}
+
+func TestWaitForServerStillWorksOnAFreePort(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	port := ln.Addr().(*net.TCPAddr).Port
+
+	var log bytes.Buffer
+	if got, ready := waitForServer(&log, port, time.Second, false); !ready || got != port {
+		t.Errorf("waitForServer = (%d, %v), want (%d, true)", got, ready, port)
 	}
 }

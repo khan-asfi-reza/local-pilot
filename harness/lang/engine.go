@@ -139,6 +139,12 @@ func (rec Recipe) run(ctx context.Context, r Req) (Result, error) {
 		}
 	}
 
+	// Generators ship a tsconfig that fails the build on unused locals and on a
+	// type imported without `import type`. Left on, the app's build gate rejects
+	// working code over style and the repair loop chases TS6133 instead of the
+	// feature, so those specific flags come off here.
+	relaxTSBuildGate(r.WorkDir)
+
 	res := Result{
 		Framework: rec.Framework,
 		Stack:     rec.Stack,

@@ -41,7 +41,7 @@ from telegram.ext import (
     filters,
 )
 
-from transcribe import transcribe
+from transcribe import transcribe, warmup
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 # httpx logs every request line at INFO, which puts the bot token (it sits in the
@@ -66,6 +66,23 @@ async def api_post(path: str, payload: dict, timeout: float | None = 60.0) -> di
         resp = await client.post(BACKEND_URL + path, json=payload)
         resp.raise_for_status()
         return resp.json()
+
+
+def describe(exc: Exception) -> str:
+    """A readable line for a failed backend call.
+
+    httpx's timeout and connect errors stringify to an empty string, so the
+    obvious f"...: {exc}" renders as a bare "Failed:" with nothing after it -
+    which is exactly what a stalled backend looked like in the chat."""
+    if isinstance(exc, httpx.TimeoutException):
+        return f"Local Pilot did not answer in time ({type(exc).__name__}). Is it still running?"
+    if isinstance(exc, httpx.ConnectError):
+        return f"Cannot reach Local Pilot at {BACKEND_URL} - is `pilot web` running?"
+    if isinstance(exc, httpx.HTTPStatusError):
+        body = (exc.response.text or "").strip()[:200]
+        return f"Local Pilot returned {exc.response.status_code}" + (f": {body}" if body else "")
+    detail = str(exc).strip()
+    return f"{type(exc).__name__}: {detail}" if detail else type(exc).__name__
 
 
 def chat_meta(update: Update) -> dict:
@@ -108,6 +125,7 @@ _CONFIRM_KB = InlineKeyboardMarkup(
 
 
 POLL_INTERVAL = 3.0  # seconds between progress polls (safe for Telegram edit limits)
+MAX_POLL_FAILURES = 5  # give up on a run after this many failed progress polls
 
 # A per-chat run token: a newer message bumps it so a stale progress loop stops
 # editing the old status message.
@@ -151,13 +169,19 @@ async def drive(chat_id: int, message, snap: dict) -> None:
     gen = _poll_gen.get(chat_id, 0) + 1
     _poll_gen[chat_id] = gen
     last = ""
+    fails = 0
     while True:
         status = snap.get("status")
         if status == "paused":
             await show_confirm(message, snap)
             return
-        if status in ("done", "idle") or snap.get("reply") is not None:
+        if snap.get("reply") is not None or status == "done":
             await safe_edit(message, snap.get("reply") or "(done)")
+            return
+        if status == "idle":
+            # The backend has no run for this chat: it restarted, or another
+            # message superseded this one. Say so instead of a bare "(done)".
+            await safe_edit(message, "That run is no longer tracked - Local Pilot restarted. Send it again.")
             return
         last = await edit_progress(message, _progress_text(snap), last)
         await asyncio.sleep(POLL_INTERVAL)
@@ -165,7 +189,15 @@ async def drive(chat_id: int, message, snap: dict) -> None:
             return  # superseded by a newer message
         try:
             snap = await api_get("/telegram/progress", chat_id=chat_id)
-        except Exception:
+            fails = 0
+        except Exception as exc:
+            fails += 1
+            log.warning("progress poll failed (%d/%d): %r", fails, MAX_POLL_FAILURES, exc)
+            if fails >= MAX_POLL_FAILURES:
+                # Without this the loop polls a dead backend forever and the
+                # chat just sits on "Working..." with no explanation.
+                await safe_edit(message, f"Lost contact with Local Pilot. {describe(exc)}")
+                return
             snap = {"status": "running", "activity": [], "current": ""}
         if _poll_gen.get(chat_id) != gen:
             return
@@ -196,7 +228,8 @@ async def send_to_agent(update: Update, text: str, status_message) -> None:
     try:
         snap = await api_post("/telegram/message", payload, timeout=60)
     except Exception as exc:
-        await safe_edit(status_message, f"Error talking to Local Pilot: {exc}")
+        log.warning("/telegram/message failed: %r", exc)
+        await safe_edit(status_message, describe(exc))
         return
     if not snap.get("authorized", True):
         await safe_edit(status_message, snap.get("reply") or "(not linked)")
@@ -215,7 +248,8 @@ async def on_confirm(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         snap = await api_post("/telegram/confirm", {"chat_id": chat_id, "decision": decision}, timeout=60)
     except Exception as exc:
-        await safe_edit(query.message, f"Error talking to Local Pilot: {exc}")
+        log.warning("/telegram/confirm failed: %r", exc)
+        await safe_edit(query.message, describe(exc))
         return
     await drive(chat_id, query.message, snap)
 
@@ -224,7 +258,8 @@ async def do_link(update: Update, code: str) -> None:
     try:
         result = await api_post("/telegram/link/verify", {"code": code.strip(), **chat_meta(update)})
     except Exception as exc:
-        await update.message.reply_text(f"Link failed: {exc}")
+        log.warning("/link failed: %r", exc)
+        await update.message.reply_text(f"Link failed. {describe(exc)}")
         return
     if result.get("ok"):
         name = result.get("name") or "there"
@@ -264,7 +299,8 @@ async def cmd_projects(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         result = await api_get("/telegram/projects", chat_id=meta["chat_id"])
     except Exception as exc:
-        await update.message.reply_text(f"Could not load projects: {exc}")
+        log.warning("/projects failed: %r", exc)
+        await update.message.reply_text(f"Could not load projects. {describe(exc)}")
         return
     projects = result.get("projects", [])
     if not projects:
@@ -285,7 +321,8 @@ async def on_pick(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             "/telegram/select", {"chat_id": query.message.chat.id, "project_id": project_id}
         )
     except Exception as exc:
-        await query.edit_message_text(f"Select failed: {exc}")
+        log.warning("project select failed: %r", exc)
+        await query.edit_message_text(f"Could not select that project. {describe(exc)}")
         return
     if result.get("cleared"):
         await query.edit_message_text("Switched to chat mode (no project). Send me anything.")
@@ -301,7 +338,8 @@ async def cmd_chat(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         await api_post("/telegram/select", {"chat_id": chat_meta(update)["chat_id"], "project_id": None})
     except Exception as exc:
-        await update.message.reply_text(f"Failed: {exc}")
+        log.warning("/chat failed: %r", exc)
+        await update.message.reply_text(describe(exc))
         return
     await update.message.reply_text("Chat mode (no project). Ask me anything.")
 
@@ -311,7 +349,8 @@ async def cmd_status(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         result = await api_get("/telegram/status", chat_id=meta["chat_id"])
     except Exception as exc:
-        await update.message.reply_text(f"Could not read status: {exc}")
+        log.warning("/status failed: %r", exc)
+        await update.message.reply_text(f"Could not read status. {describe(exc)}")
         return
     if not result.get("authorized"):
         await update.message.reply_text("Not linked. Send /link <code> to connect this chat.")
@@ -333,7 +372,8 @@ async def cmd_mode(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         await api_post("/telegram/mode", {"chat_id": chat_meta(update)["chat_id"], "mode": mode})
     except Exception as exc:
-        await update.message.reply_text(f"Failed: {exc}")
+        log.warning("/mode failed: %r", exc)
+        await update.message.reply_text(describe(exc))
         return
     await update.message.reply_text(f"Mode set to {mode}.")
 
@@ -366,7 +406,8 @@ async def cmd_clear(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     try:
         await api_post("/telegram/clear", {"chat_id": chat_id})
     except Exception as exc:
-        await update.message.reply_text(f"Failed: {exc}")
+        log.warning("/clear failed: %r", exc)
+        await update.message.reply_text(describe(exc))
         return
     await update.message.reply_text("Cleared - fresh thread, history forgotten.")
 
@@ -395,7 +436,8 @@ async def handle_voice(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
             if os.path.exists(ogg_path):
                 os.unlink(ogg_path)
     except Exception as exc:
-        await safe_edit(status, f"Transcription failed: {exc}")
+        log.warning("voice transcription failed: %r", exc)
+        await safe_edit(status, f"Transcription failed. {describe(exc)}")
         return
     if not transcript.strip():
         await safe_edit(status, "Could not understand the voice message.")
@@ -472,6 +514,14 @@ async def on_error(update: object, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     log.error("Handler error: %s", ctx.error)
 
 
+def _warm_whisper() -> None:
+    try:
+        warmup()
+        log.info("Voice transcription model ready.")
+    except Exception as exc:
+        log.warning("Could not preload the transcription model: %r", exc)
+
+
 def build_app(token: str) -> Application:
     """An Application with every handler wired, plus the token watcher."""
 
@@ -481,6 +531,9 @@ def build_app(token: str) -> Application:
         task = asyncio.create_task(watch_token(app, token))
         _watchers.add(task)
         task.add_done_callback(_watchers.discard)
+        # Load the Whisper model now, off the loop, so the first voice note is
+        # transcribed in seconds instead of waiting on a cold model load.
+        asyncio.get_running_loop().run_in_executor(None, _warm_whisper)
 
     # concurrent_updates: handle each update in its own task so slash commands
     # (e.g. /status, /mode) still respond while a run is polling for progress.

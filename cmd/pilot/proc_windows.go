@@ -22,3 +22,11 @@ func killProcess(cmd *exec.Cmd) {
 	_ = exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(cmd.Process.Pid)).Run()
 	_ = cmd.Process.Kill()
 }
+
+// killPID kills a process tree by pid, for a process this run did not start.
+func killPID(pid int) {
+	if pid <= 0 {
+		return
+	}
+	_ = exec.Command("taskkill", "/F", "/T", "/PID", strconv.Itoa(pid)).Run()
+}

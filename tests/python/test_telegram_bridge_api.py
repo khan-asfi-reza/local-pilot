@@ -92,10 +92,16 @@ def test_a_message_with_no_project_takes_the_sandboxed_chat_path(client, fake_ha
         monkeypatch.setattr(agent_runner, "HARNESS_URL", harness.url)
         monkeypatch.setattr(harness_client, "HARNESS_URL", harness.url)
         body = api.post("/telegram/message", json={"chat_id": 14, "text": "what is a closure?"}).json()
+        # Chat mode runs in the background too, so the reply arrives by polling
+        # rather than on the POST that started it.
+        for _ in range(200):
+            snap = api.get("/telegram/progress", params={"chat_id": 14}).json()
+            if snap["status"] == "done":
+                break
         sent = harness.requests[0]
 
     assert body["authorized"] is True
-    assert body["reply"] == "A closure captures scope."
+    assert snap["reply"] == "A closure captures scope."
     assert not sent.get("full_access"), "with no project selected the bot must not get file access"
 
 

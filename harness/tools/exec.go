@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"harness/harness/events"
+	"harness/harness/ports"
 )
 
 const maxOutputBytes = 20_000
@@ -124,6 +125,12 @@ func shellRunTool() *Tool {
 			if hint := ServerStartHint(command); hint != "" {
 				return map[string]any{"error": "This command " + hint + ", so shell_run will not run it (it would block until timeout). Use the `serve` tool instead: call serve with this command and its port, then verify with a shell_run curl. Load the 'serving' skill for how to run and check a server in any language."}, nil, nil
 			}
+			// Never let a build free one of Local Pilot's own ports: that kills the
+			// UI the user is watching, which is how `kill $(lsof -t -i:5173)` takes
+			// the whole app down mid-task.
+			if hint := ports.KillHint(command); hint != "" {
+				return map[string]any{"error": "Refused: this command " + hint + ". Do not free a port you did not open. If your server says the port is in use, start it on a DIFFERENT port (read VITE_PORT/PORT from .env, or pick any free port above 5200) and curl that port instead."}, nil, nil
+			}
 			// Bare pip fails on managed Python; force a virtualenv.
 			if hint := NonVenvPipHint(command); hint != "" {
 				return map[string]any{"error": "This command " + hint + ". First run `python3 -m venv .venv`, then install with `.venv/bin/pip install -r requirements.txt`, and afterwards use `.venv/bin/python` and `.venv/bin/uvicorn` (not bare pip/python3). Do not retry bare pip."}, nil, nil
@@ -175,6 +182,15 @@ func serveTool() *Tool {
 			if envPort := readEnvPort(env.WorkDir, envKey); envPort > 0 {
 				expected = envPort
 			}
+			if ports.IsReserved(expected) {
+				alt := ports.Free(expected + 27)
+				return map[string]any{"error": fmt.Sprintf(
+					"Refused: port %d is %s, not a free port for your app. Start this server on port %d instead (pass the port explicitly, e.g. `--port %d` or `server.port` in the config), then curl port %d.",
+					expected, ports.Describe(expected), alt, alt, alt)}, nil, nil
+			}
+			// Whether someone else already answers here. If so, a successful dial is
+			// not evidence that OUR server came up - it is the other process replying.
+			busyBefore := ports.InUse(expected)
 
 			cmd := newShellCmd(context.Background(), command)
 			cmd.Dir = env.WorkDir
@@ -189,9 +205,26 @@ func serveTool() *Tool {
 			}
 			env.Procs.add(&bgProc{label: command, cmd: cmd, log: &log})
 
-			resolved, ready := waitForServer(&log, expected, wait)
+			resolved, ready := waitForServer(&log, expected, wait, busyBefore)
+			// The server may ignore the port it was asked for and take a framework
+			// default (Vite does this when no port is configured). If that default is
+			// one of Pilot's own ports, the app is squatting on the UI: stop it here
+			// rather than let the agent curl the UI and call it a working app.
+			if ports.IsReserved(resolved) {
+				killProcess(cmd)
+				alt := ports.Free(resolved + 27)
+				return map[string]any{
+					"started": false, "ready": false, "port": resolved,
+					"logs": truncateMiddle(log.String(), 4000),
+					"error": fmt.Sprintf("Refused: this server bound port %d, which is %s. It has been stopped. Pin the port explicitly - for Vite set `server: { port: %d, strictPort: true }` in vite.config or run `vite --port %d --strictPort`; for other stacks pass the port flag - then serve again on %d.",
+						resolved, ports.Describe(resolved), alt, alt, alt),
+				}, nil, nil
+			}
 			url := fmt.Sprintf("http://localhost:%d", resolved)
 			note := fmt.Sprintf("server did not open port %d in time; read logs for the error", resolved)
+			if !ready && busyBefore && resolved == expected {
+				note = fmt.Sprintf("port %d was ALREADY in use by another process before this server started, and your server never announced a port of its own. Whatever answers on %d is not your app. Start it on a free port and curl that one.", expected, expected)
+			}
 			if ready {
 				note = fmt.Sprintf("server is listening at %s — verify it with `curl -s %s/<path>`, then finish", url, url)
 				if resolved != port {
